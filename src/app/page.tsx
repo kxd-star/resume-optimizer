@@ -59,6 +59,13 @@ async function extractTextFromPdf(file: File): Promise<string> {
   return pages.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+async function extractTextFromDocx(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const mammoth = await import('mammoth');
+  const result = await mammoth.extractRawText({ arrayBuffer: buffer });
+  return result.value.trim();
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [jdText, setJdText] = useState('');
@@ -66,7 +73,7 @@ export default function HomePage() {
   const [rewriteMode, setRewriteMode] = useState<RewriteMode>('standard');
   const [questionCount, setQuestionCount] = useState(8);
   const [loading, setLoading] = useState(false);
-  const [parsingPdf, setParsingPdf] = useState(false);
+  const [parsingFile, setParsingFile] = useState(false);
   const [errors, setErrors] = useState<{ jd?: string; resume?: string; general?: string }>({});
 
   useEffect(() => { getSessionId(); }, []);
@@ -75,25 +82,33 @@ export default function HomePage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-      setParsingPdf(true);
-      setErrors((prev) => ({ ...prev, resume: undefined }));
-      try {
+    setParsingFile(true);
+    setErrors((prev) => ({ ...prev, resume: undefined }));
+
+    try {
+      if (file.name.endsWith('.pdf')) {
         const text = await extractTextFromPdf(file);
         if (text && text.length >= 20) {
           setResumeText(text);
         } else {
           setErrors((prev) => ({ ...prev, resume: '未能从 PDF 提取到文本内容，可能为扫描件/图片型 PDF。请复制文字粘贴到输入框。' }));
         }
-      } catch {
-        setErrors((prev) => ({ ...prev, resume: 'PDF 解析失败，请复制文字粘贴到输入框。' }));
-      } finally {
-        setParsingPdf(false);
+      } else if (file.name.endsWith('.docx')) {
+        const text = await extractTextFromDocx(file);
+        if (text && text.length >= 20) {
+          setResumeText(text);
+        } else {
+          setErrors((prev) => ({ ...prev, resume: '未能从 Word 文档提取到文本内容。' }));
+        }
+      } else if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
+        setResumeText(await file.text());
+      } else {
+        setErrors((prev) => ({ ...prev, resume: '仅支持 PDF、Word（.docx）和 TXT 格式' }));
       }
-    } else if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
-      setResumeText(await file.text());
-    } else {
-      setErrors((prev) => ({ ...prev, resume: '仅支持 PDF 和 TXT 格式' }));
+    } catch {
+      setErrors((prev) => ({ ...prev, resume: '文件解析失败，请复制文字粘贴到输入框。' }));
+    } finally {
+      setParsingFile(false);
     }
   }, []);
 
@@ -172,8 +187,8 @@ export default function HomePage() {
             {errors.resume && <p className="mt-1 text-xs text-red-500">{errors.resume}</p>}
             <div className="mt-1 flex items-center gap-2">
               <label className="text-xs text-blue-600 cursor-pointer hover:text-blue-800 disabled:text-blue-300">
-                <span>{parsingPdf ? '正在解析 PDF...' : '上传 PDF/TXT'}</span>
-                <input type="file" accept=".pdf,.txt" onChange={handleFileUpload} className="hidden" disabled={parsingPdf} />
+                <span>{parsingFile ? '正在解析文件...' : '上传 PDF/Word/TXT'}</span>
+                <input type="file" accept=".pdf,.docx,.txt" onChange={handleFileUpload} className="hidden" disabled={parsingFile} />
               </label>
               <span className="text-xs text-gray-400">|</span>
               <span className="text-xs text-gray-400">支持粘贴或上传</span>
