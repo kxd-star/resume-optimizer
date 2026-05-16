@@ -1,81 +1,106 @@
 import { callLLMWithJson } from './llm';
 import type { JDProfile, ResumeProfile, MatchResult, DimensionScore } from '@/types';
 
-// Default thresholds (configurable via env)
 const THRESHOLD_CONSERVATIVE = Number(process.env.THRESHOLD_CONSERVATIVE) || 80;
 const THRESHOLD_STANDARD = Number(process.env.THRESHOLD_STANDARD) || 60;
 
-function intersectScore(items: string[], targets: string[]): number {
-  if (targets.length === 0) return 50;
-  if (items.length === 0) return 0;
-  const lowerItems = items.map((s) => s.toLowerCase());
-  const lowerTargets = targets.map((s) => s.toLowerCase());
-  const matches = lowerTargets.filter((t) => lowerItems.some((i) => i.includes(t) || t.includes(i)));
-  return Math.round((matches.length / targets.length) * 100);
+// Tokenize Chinese + English text into meaningful matching units
+function tokenize(text: string): string[] {
+  const tokens: string[] = [];
+  // Extract Chinese bigrams (2-char segments)
+  const chineseChars = text.match(/[一-鿿]+/g) || [];
+  for (const chunk of chineseChars) {
+    if (chunk.length <= 4) tokens.push(chunk);
+    for (let i = 0; i < chunk.length - 1; i++) {
+      tokens.push(chunk.slice(i, i + 2));
+    }
+  }
+  // Extract English words
+  const englishWords = text.match(/[a-zA-Z]+/g) || [];
+  tokens.push(...englishWords.map((w) => w.toLowerCase()));
+  // Extract numbers
+  const numbers = text.match(/\d+/g) || [];
+  tokens.push(...numbers);
+  return [...new Set(tokens)];
 }
 
-function keywordMatch(jdSkills: string[], resumeSkills: string[]): DimensionScore {
-  const matched = jdSkills.filter((js) =>
-    resumeSkills.some((rs) => rs.toLowerCase().includes(js.toLowerCase()) || js.toLowerCase().includes(rs.toLowerCase()))
-  );
-  const missing = jdSkills.filter((js) => !matched.includes(js));
-  const score = jdSkills.length > 0 ? Math.round((matched.length / jdSkills.length) * 100) : 50;
+// Score: how well do source tokens cover target tokens
+function tokenMatchScore(source: string[], target: string): number {
+  const targetTokens = tokenize(target);
+  if (targetTokens.length === 0) return 0;
+  const hit = targetTokens.filter((t) => source.some((s) => s.includes(t) || t.includes(s)));
+  return hit.length / targetTokens.length;
+}
 
-  const status = score >= 75 ? 'matched' : score >= 45 ? 'partial' : 'missing';
+function matchSkills(jdSkills: string[], resumeSkills: string[]): DimensionScore {
+  const resumeTokens = resumeSkills.flatMap(tokenize);
+  const matched = jdSkills.filter((js) => tokenMatchScore(resumeTokens, js) >= 0.5);
+  const partial = jdSkills.filter((js) => {
+    const score = tokenMatchScore(resumeTokens, js);
+    return score > 0 && score < 0.5;
+  });
+  const missing = jdSkills.filter((js) => tokenMatchScore(resumeTokens, js) === 0);
+
+  const score = jdSkills.length > 0
+    ? Math.round((matched.length / jdSkills.length) * 70 + (partial.length / jdSkills.length) * 30)
+    : 50;
+
+  const status = score >= 70 ? 'matched' : score >= 40 ? 'partial' : 'missing';
 
   return {
     key: 'hard_skills',
     name: '硬技能匹配',
-    score,
+    score: Math.min(score, 100),
     status,
-    matched_items: matched,
+    matched_items: [...matched, ...partial],
     missing_items: missing,
     explanation:
       matched.length > 0
-        ? `简历匹配了 ${matched.length}/${jdSkills.length} 项硬技能要求${missing.length > 0 ? `，缺少: ${missing.join('、')}` : ''}。`
+        ? `简历匹配了 ${matched.length}/${jdSkills.length} 项硬技能${partial.length > 0 ? `（含 ${partial.length} 项部分匹配）` : ''}${missing.length > 0 ? `，缺少: ${missing.join('、')}` : ''}。`
         : '简历中未检测到 JD 要求的硬技能关键词。',
   };
 }
 
-function projectMatch(jd: JDProfile, resume: ResumeProfile): DimensionScore {
+function matchProjects(jd: JDProfile, resume: ResumeProfile): DimensionScore {
   const allActions = resume.projects.flatMap((p) => p.actions);
   const allMetrics = resume.projects.flatMap((p) => p.metrics);
+  const actionTokens = allActions.flatMap(tokenize);
 
-  // Check how many responsibilities are covered by project actions
-  const matchedRespons = jd.responsibilities.filter((resp) =>
-    allActions.some((a) => a.toLowerCase().includes(resp.toLowerCase()) || resp.toLowerCase().includes(a.toLowerCase()))
-  );
-
+  const matched = jd.responsibilities.filter((r) => tokenMatchScore(actionTokens, r) >= 0.4);
   const hasMetrics = allMetrics.length > 0;
-  const score = jd.responsibilities.length > 0
-    ? Math.round((matchedRespons.length / jd.responsibilities.length) * 60) + (hasMetrics ? 20 : 0) + (resume.projects.length > 0 ? 20 : 0)
-    : resume.projects.length > 0 ? 60 : 0;
 
-  // Cap at 100
-  const finalScore = Math.min(score, 100);
-  const status = finalScore >= 75 ? 'matched' : finalScore >= 45 ? 'partial' : 'missing';
+  const baseScore = jd.responsibilities.length > 0
+    ? Math.round((matched.length / jd.responsibilities.length) * 60)
+    : 40;
+  const metricBonus = hasMetrics ? 20 : 0;
+  const projectBonus = resume.projects.length > 0 ? Math.min(resume.projects.length * 7, 20) : 0;
+
+  const score = Math.min(baseScore + metricBonus + projectBonus, 100);
+  const status = score >= 70 ? 'matched' : score >= 40 ? 'partial' : 'missing';
 
   return {
     key: 'projects',
     name: '项目经历匹配',
-    score: finalScore,
+    score,
     status,
-    matched_items: matchedRespons,
-    missing_items: jd.responsibilities.filter((r) => !matchedRespons.includes(r)),
+    matched_items: matched,
+    missing_items: jd.responsibilities.filter((r) => !matched.includes(r)),
     explanation:
       resume.projects.length > 0
-        ? `简历包含 ${resume.projects.length} 个项目经历，覆盖 ${matchedRespons.length}/${jd.responsibilities.length} 项核心职责。${hasMetrics ? '有量化成果，加分。' : '缺少量化指标，建议补充。'}`
+        ? `简历包含 ${resume.projects.length} 个项目经历，覆盖 ${matched.length}/${jd.responsibilities.length} 项核心职责。${hasMetrics ? '有量化成果，加分。' : '缺少量化指标，建议补充。'}`
         : '简历未检测到项目经历。',
   };
 }
 
-function industryMatch(jd: JDProfile, resume: ResumeProfile): DimensionScore {
-  const score = intersectScore(resume.industries, jd.industries);
-  const matched = jd.industries.filter((ind) =>
-    resume.industries.some((ri) => ri.toLowerCase().includes(ind.toLowerCase()) || ind.toLowerCase().includes(ri.toLowerCase()))
-  );
+function matchIndustry(jd: JDProfile, resume: ResumeProfile): DimensionScore {
+  const resumeTokens = resume.industries.flatMap(tokenize);
+  const matched = jd.industries.filter((ind) => tokenMatchScore(resumeTokens, ind) >= 0.4);
   const missing = jd.industries.filter((ind) => !matched.includes(ind));
-  const status = score >= 75 ? 'matched' : score >= 45 ? 'partial' : 'missing';
+
+  const score = jd.industries.length > 0
+    ? Math.round((matched.length / jd.industries.length) * 100)
+    : 50;
+  const status = score >= 70 ? 'matched' : score >= 40 ? 'partial' : 'missing';
 
   return {
     key: 'industry',
@@ -91,34 +116,39 @@ function industryMatch(jd: JDProfile, resume: ResumeProfile): DimensionScore {
   };
 }
 
-function softSkillMatch(jd: JDProfile, resume: ResumeProfile): DimensionScore {
+function matchSoftSkills(jd: JDProfile, resume: ResumeProfile): DimensionScore {
   const allText = [
-    resume.projects.flatMap((p) => p.actions).join(' '),
+    ...resume.projects.flatMap((p) => p.actions),
     ...resume.skills,
-    ...resume.risk_items,
-  ].join(' ').toLowerCase();
+  ].join(' ');
+  const allTokens = tokenize(allText);
+
+  const keywordMap: Record<string, string[]> = {
+    '沟通': ['沟通', '协作', '协调', 'stakeholder', '跨部门'],
+    '协作': ['协作', '合作', '跨部门', '团队', '配合'],
+    '管理': ['管理', 'leadership', '带领', '带队', '统筹'],
+    '抗压': ['抗压', '压力', '快速迭代', '快节奏', 'ddl'],
+    '结果导向': ['结果', '目标', 'kpi', 'okr', '交付', 'roi'],
+    '表达': ['表达', '汇报', '演讲', 'presentation', '宣讲'],
+    '主动': ['主动', '推动', '驱动', 'ownership', 'owner'],
+    '分析': ['分析', '数据分析', '调研', '研究', '洞察'],
+    '创新': ['创新', '0-1', '从0到1', '新模式'],
+  };
 
   const matched = jd.soft_skills.filter((ss) => {
-    const keywords: Record<string, string[]> = {
-      '沟通': ['沟通', '协作', '协调', 'stakeholder'],
-      '协作': ['协作', '合作', '跨部门', '团队'],
-      '管理': ['管理', 'leadership', '带领', '带队'],
-      '抗压': ['抗压', '压力', '快速迭代', '快节奏'],
-      '结果导向': ['结果', '目标', 'kpi', 'okr', '交付'],
-      '表达': ['表达', '汇报', '汇报', '演讲', 'presentation'],
-      '主动': ['主动', '推动', '驱动', 'ownership'],
-    };
-    for (const [key, kws] of Object.entries(keywords)) {
-      if (ss.toLowerCase().includes(key)) {
-        return kws.some((kw) => allText.includes(kw));
+    for (const [key, kws] of Object.entries(keywordMap)) {
+      if (ss.includes(key)) {
+        return kws.some((kw) => tokenMatchScore(allTokens, kw) >= 0.5);
       }
     }
-    return allText.includes(ss.toLowerCase());
+    return tokenMatchScore(allTokens, ss) >= 0.3;
   });
 
   const missing = jd.soft_skills.filter((ss) => !matched.includes(ss));
-  const score = jd.soft_skills.length > 0 ? Math.round((matched.length / jd.soft_skills.length) * 100) : 50;
-  const status = score >= 75 ? 'matched' : score >= 45 ? 'partial' : 'missing';
+  const score = jd.soft_skills.length > 0
+    ? Math.round((matched.length / jd.soft_skills.length) * 100)
+    : 50;
+  const status = score >= 70 ? 'matched' : score >= 40 ? 'partial' : 'missing';
 
   return {
     key: 'soft_skills',
@@ -134,30 +164,73 @@ function softSkillMatch(jd: JDProfile, resume: ResumeProfile): DimensionScore {
   };
 }
 
-function qualityMatch(resume: ResumeProfile): DimensionScore {
+function matchExperienceYears(jd: JDProfile, resume: ResumeProfile): DimensionScore {
+  const required = jd.experience_years || 0;
+  const actual = resume.experience_years || 0;
+
+  let score: number;
+  let matched: string[];
+  let missing: string[];
+  let explanation: string;
+
+  if (required === 0) {
+    score = 50;
+    matched = ['JD 未明确要求年限'];
+    missing = [];
+    explanation = 'JD 未设定明确年限要求。';
+  } else if (actual === 0) {
+    score = 0;
+    matched = [];
+    missing = [`要求 ${required} 年，简历未提取到年限信息`];
+    explanation = '未能从简历中提取到工作年限信息。';
+  } else if (actual >= required) {
+    score = 100;
+    matched = [`简历 ${actual} 年 ≥ JD 要求 ${required} 年`];
+    missing = [];
+    explanation = `简历 ${actual} 年经验满足 JD ${required} 年要求。`;
+  } else if (actual >= required * 0.7) {
+    score = 60;
+    matched = [`简历 ${actual} 年，接近要求 ${required} 年`];
+    missing = [`差 ${(required - actual).toFixed(1)} 年`];
+    explanation = `简历 ${actual} 年经验接近 JD ${required} 年要求，可通过其他优势弥补。`;
+  } else {
+    score = Math.round((actual / required) * 30);
+    matched = [];
+    missing = [`要求 ${required} 年，简历仅 ${actual} 年`];
+    explanation = `简历 ${actual} 年经验与 JD ${required} 年要求差距较大。`;
+  }
+
+  const status = score >= 70 ? 'matched' : score >= 40 ? 'partial' : 'missing';
+
+  return {
+    key: 'experience_years',
+    name: '工作年限匹配',
+    score,
+    status,
+    matched_items: matched,
+    missing_items: missing,
+    explanation,
+  };
+}
+
+function matchQuality(resume: ResumeProfile): DimensionScore {
   const metricCount = resume.metrics.length;
   const projectCount = resume.projects.length;
   const hasDetails = resume.projects.some((p) => p.actions.length > 1);
+  const hasRiskItems = resume.risk_items.length > 0;
 
-  let score = 0;
-  if (metricCount >= 3) score += 40;
-  else if (metricCount >= 1) score += 25;
-  else score += 10;
+  const metricScore = metricCount >= 3 ? 40 : metricCount >= 1 ? 25 : 10;
+  const projectScore = projectCount >= 3 ? 30 : projectCount >= 1 ? 20 : 0;
+  const detailScore = hasDetails ? 30 : 15;
+  const riskPenalty = hasRiskItems ? -10 : 0;
 
-  if (projectCount >= 3) score += 30;
-  else if (projectCount >= 1) score += 20;
-  else score += 0;
-
-  if (hasDetails) score += 30;
-  else score += 15;
-
-  const finalScore = Math.min(score, 100);
-  const status = finalScore >= 75 ? 'matched' : finalScore >= 45 ? 'partial' : 'missing';
+  const score = Math.min(Math.max(metricScore + projectScore + detailScore + riskPenalty, 0), 100);
+  const status = score >= 70 ? 'matched' : score >= 40 ? 'partial' : 'missing';
 
   return {
     key: 'quality',
     name: '量化成果与表达质量',
-    score: finalScore,
+    score,
     status,
     matched_items: metricCount > 0 ? [`${metricCount} 个量化指标`] : [],
     missing_items: metricCount === 0 ? ['缺少量化指标'] : [],
@@ -188,21 +261,21 @@ function recommendMode(overallScore: number): { mode: 'conservative' | 'standard
 }
 
 export async function calculateMatch(jd: JDProfile, resume: ResumeProfile): Promise<MatchResult> {
-  // Rule-based dimension scoring
   const dimensions = [
-    keywordMatch(jd.required_skills, resume.skills),
-    projectMatch(jd, resume),
-    industryMatch(jd, resume),
-    softSkillMatch(jd, resume),
-    qualityMatch(resume),
+    matchSkills(jd.required_skills, resume.skills),
+    matchProjects(jd, resume),
+    matchIndustry(jd, resume),
+    matchSoftSkills(jd, resume),
+    matchExperienceYears(jd, resume),
+    matchQuality(resume),
   ];
 
-  // Weighted overall score (from PRD: 35%, 25%, 15%, 10%, 15%)
   const weights: Record<string, number> = {
-    hard_skills: 0.35,
-    projects: 0.25,
-    industry: 0.15,
+    hard_skills: 0.30,
+    projects: 0.20,
+    industry: 0.10,
     soft_skills: 0.10,
+    experience_years: 0.15,
     quality: 0.15,
   };
 
