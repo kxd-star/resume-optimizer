@@ -22,6 +22,43 @@ const MODES: { value: RewriteMode; label: string; desc: string }[] = [
   { value: 'aggressive', label: '冲刺版', desc: '强 JD 导向' },
 ];
 
+// Dynamically import pdfjs-dist only in browser
+let pdfjsPromise: Promise<any> | null = null;
+async function getPdfjs() {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import('pdfjs-dist').then((mod) => {
+      mod.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+      return mod;
+    });
+  }
+  return pdfjsPromise;
+}
+
+async function extractTextFromPdf(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const pdfjsLib = await getPdfjs();
+  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const doc = await loadingTask.promise;
+  const pages: string[] = [];
+
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    const lines: string[] = [];
+    let lastY = 0;
+    for (const item of content.items) {
+      const { str, transform } = item as any;
+      if (lines.length > 0 && Math.abs(transform[5] - lastY) > 2) lines.push('\n');
+      lines.push(str);
+      lastY = transform[5];
+    }
+    pages.push(lines.join(''));
+  }
+
+  doc.destroy();
+  return pages.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [jdText, setJdText] = useState('');
@@ -29,6 +66,7 @@ export default function HomePage() {
   const [rewriteMode, setRewriteMode] = useState<RewriteMode>('standard');
   const [questionCount, setQuestionCount] = useState(8);
   const [loading, setLoading] = useState(false);
+  const [parsingPdf, setParsingPdf] = useState(false);
   const [errors, setErrors] = useState<{ jd?: string; resume?: string; general?: string }>({});
 
   useEffect(() => { getSessionId(); }, []);
@@ -38,15 +76,19 @@ export default function HomePage() {
     if (!file) return;
 
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-      const formData = new FormData();
-      formData.append('file', file);
+      setParsingPdf(true);
+      setErrors((prev) => ({ ...prev, resume: undefined }));
       try {
-        const resp = await fetch('/api/upload/pdf', { method: 'POST', body: formData });
-        const data = await resp.json();
-        if (data.text) setResumeText(data.text);
-        if (data.warning) setErrors((prev) => ({ ...prev, resume: data.warning }));
+        const text = await extractTextFromPdf(file);
+        if (text && text.length >= 20) {
+          setResumeText(text);
+        } else {
+          setErrors((prev) => ({ ...prev, resume: '未能从 PDF 提取到文本内容，可能为扫描件/图片型 PDF。请复制文字粘贴到输入框。' }));
+        }
       } catch {
-        setErrors((prev) => ({ ...prev, resume: 'PDF 解析失败，请手动粘贴文本' }));
+        setErrors((prev) => ({ ...prev, resume: 'PDF 解析失败，请复制文字粘贴到输入框。' }));
+      } finally {
+        setParsingPdf(false);
       }
     } else if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
       setResumeText(await file.text());
@@ -129,9 +171,9 @@ export default function HomePage() {
             />
             {errors.resume && <p className="mt-1 text-xs text-red-500">{errors.resume}</p>}
             <div className="mt-1 flex items-center gap-2">
-              <label className="text-xs text-blue-600 cursor-pointer hover:text-blue-800">
-                <span>上传 PDF/TXT</span>
-                <input type="file" accept=".pdf,.txt" onChange={handleFileUpload} className="hidden" />
+              <label className="text-xs text-blue-600 cursor-pointer hover:text-blue-800 disabled:text-blue-300">
+                <span>{parsingPdf ? '正在解析 PDF...' : '上传 PDF/TXT'}</span>
+                <input type="file" accept=".pdf,.txt" onChange={handleFileUpload} className="hidden" disabled={parsingPdf} />
               </label>
               <span className="text-xs text-gray-400">|</span>
               <span className="text-xs text-gray-400">支持粘贴或上传</span>

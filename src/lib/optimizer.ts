@@ -83,8 +83,7 @@ Recommended Mode: ${match.recommend_mode}
 
 Diagnosis Highlights:
 - Matched: ${diagnosis.matched.slice(0, 3).join('; ')}
-- Missing: ${diagnosis.missing.slice(0, 3).join('; ')}
-- Risk Items: ${diagnosis.risk_items.filter((r) => r.risk_level === 'high').map((r) => r.issue).join('; ')}`;
+- Missing: ${diagnosis.missing.slice(0, 3).join('; ')}`;
 
   try {
     const result = await callLLMWithJson<{
@@ -93,7 +92,7 @@ Diagnosis Highlights:
       changes: { before: string; after: string; reason: string; needs_confirmation: string[] }[];
       placeholders: string[];
       risk_warnings: string[];
-    }>(prompt);
+    }>(prompt, { maxTokens: 8192 });
 
     return {
       version: mode,

@@ -66,7 +66,7 @@ Match Score: ${match.overall_score}/100
 Gaps: ${match.dimensions.filter((d) => d.status === 'missing' || d.status === 'partial').map((d) => `${d.name}: ${d.missing_items.join(', ')}`).join('; ')}`;
 
   try {
-    const result = await callLLMWithJson<InterviewQuestions>(prompt);
+    const result = await callLLMWithJson<InterviewQuestions>(prompt, { maxTokens: 8192 });
 
     // Ensure we have the right number of questions
     if (!result.questions || !Array.isArray(result.questions)) {
