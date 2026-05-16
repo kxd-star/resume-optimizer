@@ -95,19 +95,3 @@ export function validateUpdateMatchRequest(body: unknown): {
     edited_resume_text: (obj.edited_resume_text as string).trim(),
   };
 }
-
-// PDF content validation
-export function detectPdfQuality(text: string): { ok: boolean; message?: string } {
-  if (!text || text.trim().length === 0) {
-    return { ok: false, message: '这份简历暂未检测到可提取的文本内容，请复制文字粘贴到输入框。' };
-  }
-  if (text.trim().length < 50) {
-    return { ok: false, message: '提取到的文本内容过少，可能为图片型 PDF。请复制文字粘贴到输入框。' };
-  }
-  // Check for garbled text indicators
-  const garbledRatio = (text.match(/[^一-鿿 -~\r\n]/g) || []).length / text.length;
-  if (garbledRatio > 0.3) {
-    return { ok: false, message: '检测到大量乱码字符，可能为扫描件或图片型 PDF。请复制文字粘贴到输入框。' };
-  }
-  return { ok: true };
-}

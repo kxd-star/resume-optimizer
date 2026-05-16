@@ -8,9 +8,9 @@ export async function GET(
 ) {
   try {
     const { taskId } = await params;
-    const status = getTaskStatus(taskId);
+    const status = await getTaskStatus(taskId);
 
-    if (!status || status.status === 'failed' && status.error?.includes('not found')) {
+    if (!status || status.error === 'task not found') {
       return NextResponse.json(
         { error: '任务不存在' },
         { status: 404 }

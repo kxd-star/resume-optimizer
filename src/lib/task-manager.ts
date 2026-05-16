@@ -170,13 +170,13 @@ export async function createAnalysisTask(params: {
   return taskId;
 }
 
-export function getTaskStatus(taskId: string): {
+export async function getTaskStatus(taskId: string): Promise<{
   status: TaskStatus;
   progress_step?: ProgressStep;
   error?: string;
   result?: AnalysisResult;
   result_id?: string;
-} {
+}> {
   // Return from in-memory state first (fast path)
   const state = taskStates.get(taskId);
   if (state) {
@@ -189,16 +189,17 @@ export function getTaskStatus(taskId: string): {
     };
   }
 
-  // Fallback: check DB
-  getTask(taskId).then((task) => {
-    if (task) {
-      taskStates.set(taskId, {
-        status: task.status as TaskStatus,
-        progress_step: task.progress_step as ProgressStep,
-        error: task.error_message || undefined,
-      });
-    }
-  });
+  // Fallback: check DB (await the result properly)
+  const task = await getTask(taskId);
+  if (task) {
+    const s = {
+      status: task.status as TaskStatus,
+      progress_step: task.progress_step as ProgressStep,
+      error: task.error_message || undefined,
+    };
+    taskStates.set(taskId, s);
+    return s;
+  }
 
-  return { status: 'pending', progress_step: 'jd_parsing' };
+  return { status: 'pending', progress_step: 'jd_parsing', error: 'task not found' };
 }

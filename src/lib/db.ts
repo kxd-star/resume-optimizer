@@ -1,13 +1,15 @@
 import path from 'path';
 import fs from 'fs';
+import { Mutex } from 'async-mutex';
 
-// sql.js - pure JS SQLite
 let SQL: any = null;
 let db: any = null;
 let initPromise: Promise<any> | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 const DB_PATH = path.join(process.cwd(), 'data', 'resume-optimizer.db');
 const WASM_PATH = path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm');
+const dbMutex = new Mutex();
 
 async function initDb(): Promise<any> {
   const dir = path.dirname(DB_PATH);
@@ -15,11 +17,8 @@ async function initDb(): Promise<any> {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // Dynamic import to avoid type issues
   const initSqlJs = await import('sql.js').then((m) => m.default || m);
-  SQL = await initSqlJs({
-    locateFile: (file: string) => WASM_PATH,
-  });
+  SQL = await initSqlJs({ locateFile: (file: string) => WASM_PATH });
 
   let database: any;
   if (fs.existsSync(DB_PATH)) {
@@ -31,14 +30,26 @@ async function initDb(): Promise<any> {
 
   database.run('PRAGMA foreign_keys = ON');
   initSchema(database);
-  saveDb(database);
+  flushDb(database);
   return database;
 }
 
-function saveDb(database: any): void {
+// Synchronous write (used only during init)
+function flushDb(database: any): void {
   const data = database.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
+  fs.writeFileSync(DB_PATH, Buffer.from(data));
+}
+
+// Debounced write — coalesces multiple writes into one, with mutex
+function scheduleSave(database: any): void {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    dbMutex.runExclusive(() => {
+      const data = database.export();
+      fs.writeFileSync(DB_PATH, Buffer.from(data));
+    });
+  }, 100);
 }
 
 function initSchema(database: any): void {
@@ -88,9 +99,7 @@ function initSchema(database: any): void {
 
 export async function getDb(): Promise<any> {
   if (db) return db;
-  if (!initPromise) {
-    initPromise = initDb();
-  }
+  if (!initPromise) initPromise = initDb();
   db = await initPromise;
   return db;
 }
@@ -109,7 +118,7 @@ export async function insertTask(task: {
     'INSERT INTO analysis_tasks (id, client_session_id, status, progress_step, jd_text, resume_text, rewrite_mode, question_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     [task.id, task.client_session_id || null, 'pending', 'jd_parsing', task.jd_text, task.resume_text, task.rewrite_mode, task.question_count]
   );
-  saveDb(database);
+  scheduleSave(database);
 }
 
 export async function updateTaskStatus(
@@ -123,7 +132,7 @@ export async function updateTaskStatus(
     "UPDATE analysis_tasks SET status = ?, progress_step = ?, error_message = ?, updated_at = datetime('now') WHERE id = ?",
     [status, progress_step || null, error_message || null, taskId]
   );
-  saveDb(database);
+  scheduleSave(database);
 }
 
 export async function getTask(taskId: string): Promise<any> {
@@ -155,7 +164,7 @@ export async function insertResult(result: {
     'INSERT INTO analysis_results (id, task_id, jd_profile, resume_profile, match_result, diagnosis, optimized_resume, interview_questions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     [result.id, result.task_id, result.jd_profile, result.resume_profile, result.match_result, result.diagnosis, result.optimized_resume, result.interview_questions]
   );
-  saveDb(database);
+  scheduleSave(database);
 }
 
 export async function getResultByTaskId(taskId: string): Promise<any> {
@@ -174,5 +183,5 @@ export async function getResultByTaskId(taskId: string): Promise<any> {
 export async function updateResultMatch(resultId: string, matchResult: string): Promise<void> {
   const database = await getDb();
   database.run('UPDATE analysis_results SET match_result = ? WHERE id = ?', [matchResult, resultId]);
-  saveDb(database);
+  scheduleSave(database);
 }
