@@ -1,4 +1,6 @@
-import OpenAI from 'openai';
+import OpenAI, { type ClientOptions } from 'openai';
+import type { z } from 'zod';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEEPSEEK_MODEL = 'deepseek-chat';
@@ -13,12 +15,20 @@ function getClient(): OpenAI {
     throw new Error('DEEPSEEK_API_KEY environment variable is not set');
   }
 
-  client = new OpenAI({
+  const proxyUrl = process.env.PROXY_URL || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+
+  const opts: Record<string, unknown> = {
     apiKey,
     baseURL: DEEPSEEK_BASE_URL,
-    timeout: 60_000,
-    maxRetries: 2,
-  });
+    timeout: 120_000,
+    maxRetries: 3,
+  };
+
+  if (proxyUrl) {
+    opts.httpAgent = new HttpsProxyAgent(proxyUrl);
+  }
+
+  client = new OpenAI(opts as unknown as ClientOptions);
   return client;
 }
 
@@ -67,7 +77,7 @@ export async function callLLM(
 
 export async function callLLMWithJson<T>(
   prompt: string,
-  config: LLMConfig = {}
+  config: LLMConfig & { schema?: z.ZodType<T> } = {}
 ): Promise<T> {
   const cfg = {
     ...config,
@@ -85,9 +95,25 @@ export async function callLLMWithJson<T>(
     cleaned = jsonMatch[1].trim();
   }
 
+  let parsed: any;
   try {
-    return JSON.parse(cleaned) as T;
+    parsed = JSON.parse(cleaned);
   } catch {
     throw new Error(`Failed to parse LLM response as JSON: ${cleaned.substring(0, 200)}`);
   }
+
+  // If schema is provided, validate the parsed data
+  if (config.schema) {
+    const result = config.schema.safeParse(parsed);
+    if (!result.success) {
+      const details = result.error.errors
+        .slice(0, 5)
+        .map((e) => `${e.path.join('.')}: ${e.message}`)
+        .join('; ');
+      throw new Error(`LLM 返回数据格式异常: ${details}`);
+    }
+    return result.data;
+  }
+
+  return parsed as T;
 }

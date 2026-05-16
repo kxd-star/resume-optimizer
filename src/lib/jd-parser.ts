@@ -1,4 +1,5 @@
 import { callLLMWithJson } from './llm';
+import { JDProfileSchema } from './validation-schema';
 import type { JDProfile } from '@/types';
 
 const JD_PARSE_PROMPT = `You are a professional job description analyst. Given a job description, extract structured information.
@@ -31,18 +32,7 @@ export async function parseJD(jdText: string): Promise<JDProfile> {
   const prompt = `${JD_PARSE_PROMPT}\n\nJob Description:\n${jdText}`;
 
   try {
-    const result = await callLLMWithJson<JDProfile>(prompt);
-    // Validate required fields
-    if (!result.job_title) result.job_title = '未知岗位';
-    if (!Array.isArray(result.required_skills)) result.required_skills = [];
-    if (!Array.isArray(result.preferred_skills)) result.preferred_skills = [];
-    if (!Array.isArray(result.soft_skills)) result.soft_skills = [];
-    if (typeof result.experience_years !== 'number') result.experience_years = 0;
-    if (!Array.isArray(result.industries)) result.industries = [];
-    if (!Array.isArray(result.business_goals)) result.business_goals = [];
-    if (!Array.isArray(result.responsibilities)) result.responsibilities = [];
-    if (!Array.isArray(result.interview_focus)) result.interview_focus = [];
-    return result;
+    return await callLLMWithJson(prompt, { schema: JDProfileSchema }) as unknown as JDProfile;
   } catch (error) {
     throw new Error(`JD 解析失败: ${error instanceof Error ? error.message : '未知错误'}`);
   }

@@ -1,4 +1,5 @@
 import { callLLMWithJson } from './llm';
+import { InterviewQuestionsSchema } from './validation-schema';
 import type { JDProfile, ResumeProfile, MatchResult, InterviewQuestions } from '@/types';
 
 const INTERVIEW_PROMPT = `You are a senior interview coach. Based on the JD requirements and the candidate's resume, generate high-probability interview questions.
@@ -66,16 +67,14 @@ Match Score: ${match.overall_score}/100
 Gaps: ${match.dimensions.filter((d) => d.status === 'missing' || d.status === 'partial').map((d) => `${d.name}: ${d.missing_items.join(', ')}`).join('; ')}`;
 
   try {
-    const result = await callLLMWithJson<InterviewQuestions>(prompt, { maxTokens: 8192 });
+    const result = await callLLMWithJson(prompt, { maxTokens: 8192, schema: InterviewQuestionsSchema });
 
     // Ensure we have the right number of questions
     if (!result.questions || !Array.isArray(result.questions)) {
       throw new Error('Invalid interview questions response');
     }
 
-    return {
-      questions: result.questions.slice(0, count),
-    };
+    return { questions: result.questions.slice(0, count) } as InterviewQuestions;
   } catch (error) {
     throw new Error(`面试题生成失败: ${error instanceof Error ? error.message : '未知错误'}`);
   }

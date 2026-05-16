@@ -1,4 +1,6 @@
 import { callLLMWithJson } from './llm';
+import { OptimizedResumeSchema } from './validation-schema';
+import { verifyOptimizedResume, formatFactCheckWarning } from './fact-check';
 import type { JDProfile, ResumeProfile, MatchResult, ResumeDiagnosis, OptimizedResume, RewriteMode } from '@/types';
 
 const OPTIMIZER_PROMPT_TEMPLATE = `You are a professional resume writer specializing in ATS-optimized resumes.
@@ -86,21 +88,22 @@ Diagnosis Highlights:
 - Missing: ${diagnosis.missing.slice(0, 3).join('; ')}`;
 
   try {
-    const result = await callLLMWithJson<{
-      version: string;
-      optimized_resume: string;
-      changes: { before: string; after: string; reason: string; needs_confirmation: string[] }[];
-      placeholders: string[];
-      risk_warnings: string[];
-    }>(prompt, { maxTokens: 8192 });
+    const result = await callLLMWithJson(prompt, { maxTokens: 8192, schema: OptimizedResumeSchema });
 
     return {
       version: mode,
       optimized_resume: result.optimized_resume || '',
       changes: result.changes || [],
       placeholders: result.placeholders || [],
-      risk_warnings: result.risk_warnings || [],
-    };
+      risk_warnings: [
+        ...(result.risk_warnings || []),
+        ...(() => {
+          const fcIssues = verifyOptimizedResume(originalResume, result.optimized_resume || '');
+          const fcMsg = formatFactCheckWarning(fcIssues);
+          return fcMsg ? [fcMsg] : [];
+        })(),
+      ],
+    } as OptimizedResume;
   } catch (error) {
     throw new Error(`简历优化失败: ${error instanceof Error ? error.message : '未知错误'}`);
   }

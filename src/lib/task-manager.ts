@@ -192,12 +192,41 @@ export async function getTaskStatus(taskId: string): Promise<{
   // Fallback: check DB (await the result properly)
   const task = await getTask(taskId);
   if (task) {
-    const s = {
+    const s: {
+      status: TaskStatus;
+      progress_step?: ProgressStep;
+      error?: string;
+      result?: AnalysisResult;
+      result_id?: string;
+    } = {
       status: task.status as TaskStatus,
       progress_step: task.progress_step as ProgressStep,
       error: task.error_message || undefined,
     };
-    taskStates.set(taskId, s);
+
+    // If completed, also restore full result from DB
+    if (task.status === 'completed') {
+      const dbResult = await getResultByTaskId(taskId);
+      if (dbResult) {
+        s.result_id = dbResult.id;
+        try {
+          s.result = {
+            jd_profile: JSON.parse(dbResult.jd_profile || '{}'),
+            resume_profile: JSON.parse(dbResult.resume_profile || '{}'),
+            match_result: JSON.parse(dbResult.match_result || '{}'),
+            diagnosis: JSON.parse(dbResult.diagnosis || '{}'),
+            optimized_resume: JSON.parse(dbResult.optimized_resume || '{}'),
+            interview_questions: JSON.parse(dbResult.interview_questions || '{}'),
+          };
+        } catch {
+          // JSON parse failed — result data is corrupted
+          s.status = 'failed';
+          s.error = '结果数据损坏';
+        }
+      }
+    }
+
+    taskStates.set(taskId, s as any);
     return s;
   }
 

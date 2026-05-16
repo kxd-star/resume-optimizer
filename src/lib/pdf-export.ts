@@ -1,5 +1,37 @@
 import type { OptimizedResume, InterviewQuestions } from '@/types';
 
+const PRINT_STYLES = `
+  @media print {
+    @page { margin: 15mm 20mm; size: A4; }
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+  @media screen {
+    body { background: #f5f5f5; padding: 40px 20px; }
+    .paper { max-width: 210mm; margin: 0 auto; background: #fff; padding: 40px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+  }
+`;
+
+function wrapPrintHTML(title: string, bodyContent: string, extraStyles: string = ''): string {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title}</title>
+<style>
+  ${PRINT_STYLES}
+  ${extraStyles}
+</style>
+</head>
+<body>
+<div class="paper">
+${bodyContent}
+</div>
+<script>(function(){if(window.location.search.includes('print=1')){setTimeout(function(){window.print()},500)}})()</script>
+</body>
+</html>`;
+}
+
 // Generate ATS-friendly plain text resume
 export function generateATSResumeText(optimizedResume: OptimizedResume): string {
   return optimizedResume.optimized_resume;
@@ -12,7 +44,6 @@ export function generatePrettyResumeHTML(optimizedResume: OptimizedResume, title
     .map((line) => {
       const trimmed = line.trim();
       if (!trimmed) return '<br/>';
-      // Detect section headers (short lines at the start or lines with common headers)
       const sectionKeywords = ['教育', '经历', '技能', '项目', '关于', '联系', '工作', '实习', '证书', '语言'];
       const isHeader = sectionKeywords.some((kw) => trimmed.includes(kw)) && trimmed.length < 20;
       if (isHeader) {
@@ -22,24 +53,14 @@ export function generatePrettyResumeHTML(optimizedResume: OptimizedResume, title
     })
     .join('\n');
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>${title}</title>
-<style>
-  @page { margin: 20mm 25mm; }
-  body { font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif; max-width: 210mm; margin: 0 auto; padding: 20px; color: #1e293b; }
-  h1 { font-size: 22px; margin-bottom: 4px; }
-  h2 { font-size: 14px; font-weight: 400; color: #64748b; margin-top: 0; }
-</style>
-</head>
-<body>
-<h1>${name}</h1>
-<h2>${title}</h2>
-${bodyContent}
-</body>
-</html>`;
+  const content = `
+    <div>
+      <h1 style="font-size: 22px; margin-bottom: 4px;">${name}</h1>
+      <h2 style="font-size: 14px; font-weight: 400; color: #64748b; margin-top: 0;">${title}</h2>
+      ${bodyContent}
+    </div>`;
+
+  return wrapPrintHTML(title, content);
 }
 
 // Generate interview questions PDF HTML
@@ -60,22 +81,13 @@ export function generateInterviewQuestionsHTML(questions: InterviewQuestions): s
     )
     .join('\n');
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>面试押题清单</title>
-<style>
-  @page { margin: 15mm 20mm; }
-  body { font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif; max-width: 210mm; margin: 0 auto; padding: 20px; color: #1e293b; }
-  h1 { font-size: 18px; margin-bottom: 16px; border-bottom: 2px solid #1e293b; padding-bottom: 8px; }
-</style>
-</head>
-<body>
-<h1>面试押题清单（${questions.questions.length} 题）</h1>
-${questionsHTML}
-</body>
-</html>`;
+  const content = `
+    <div>
+      <h1 style="font-size: 18px; margin-bottom: 16px; border-bottom: 2px solid #1e293b; padding-bottom: 8px;">面试押题清单（${questions.questions.length} 题）</h1>
+      ${questionsHTML}
+    </div>`;
+
+  return wrapPrintHTML('面试押题清单', content);
 }
 
 // Generate interview cheat sheet HTML
@@ -91,20 +103,11 @@ export function generateInterviewCheatSheetHTML(questions: InterviewQuestions): 
     )
     .join('\n');
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>面试押题 - 精简小抄</title>
-<style>
-  @page { margin: 12mm 15mm; }
-  body { font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif; max-width: 210mm; margin: 0 auto; padding: 15px; color: #1e293b; }
-  h1 { font-size: 14px; margin-bottom: 10px; }
-</style>
-</head>
-<body>
-<h1>面试押题 - 精简小抄（${questions.questions.length} 题）</h1>
-${itemsHTML}
-</body>
-</html>`;
+  const content = `
+    <div>
+      <h1 style="font-size: 14px; margin-bottom: 10px;">面试押题 - 精简小抄（${questions.questions.length} 题）</h1>
+      ${itemsHTML}
+    </div>`;
+
+  return wrapPrintHTML('面试押题-精简小抄', content);
 }

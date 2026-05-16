@@ -32,6 +32,8 @@ export async function POST(
     let html: string;
     let filename: string;
 
+    const isPrint = request.nextUrl?.searchParams?.get?.('print') === '1';
+
     switch (exportType) {
       case 'resume_ats': {
         const text = generateATSResumeText(optimizedResume);
@@ -63,10 +65,11 @@ export async function POST(
       }
     }
 
+    const disposition = isPrint ? 'inline' : `attachment; filename="${filename}"`;
     return new NextResponse(html, {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Disposition': disposition,
       },
     });
   } catch (error) {

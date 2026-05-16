@@ -1,4 +1,5 @@
 import { callLLMWithJson } from './llm';
+import { ResumeProfileSchema } from './validation-schema';
 import type { ResumeProfile } from '@/types';
 
 const RESUME_PARSE_PROMPT = `You are a professional resume analyst. Given a resume text, extract structured information.
@@ -40,18 +41,7 @@ export async function parseResume(resumeText: string): Promise<ResumeProfile> {
   const prompt = `${RESUME_PARSE_PROMPT}\n\nResume:\n${resumeText}`;
 
   try {
-    const result = await callLLMWithJson<ResumeProfile>(prompt);
-    // Validate required fields
-    if (!result.candidate_name) result.candidate_name = '未知';
-    if (!result.target_title) result.target_title = '未知';
-    if (!Array.isArray(result.skills)) result.skills = [];
-    if (!Array.isArray(result.industries)) result.industries = [];
-    if (typeof result.experience_years !== 'number') result.experience_years = 0;
-    if (!Array.isArray(result.projects)) result.projects = [];
-    if (!Array.isArray(result.education)) result.education = [];
-    if (!Array.isArray(result.metrics)) result.metrics = [];
-    if (!Array.isArray(result.risk_items)) result.risk_items = [];
-    return result;
+    return await callLLMWithJson(prompt, { schema: ResumeProfileSchema }) as unknown as ResumeProfile;
   } catch (error) {
     throw new Error(`简历解析失败: ${error instanceof Error ? error.message : '未知错误'}`);
   }

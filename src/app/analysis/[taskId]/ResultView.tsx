@@ -490,7 +490,31 @@ function ExportTab({ result, taskId }: { result: AnalysisResult; taskId: string 
     setExporting(type);
     setExportError(null);
     try {
-      const resp = await fetch(`/api/analysis/${taskId}/export`, {
+      // TXT export → download directly
+      if (type === 'resume_ats') {
+        const resp = await fetch(`/api/analysis/${taskId}/export`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type }),
+        });
+        if (!resp.ok) {
+          const data = await resp.json();
+          throw new Error(data.error || '导出失败');
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${result.jd_profile.job_title}_简历_ATS.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      // HTML export → open in new window with auto-print
+      const resp = await fetch(`/api/analysis/${taskId}/export?print=1`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type }),
@@ -499,20 +523,13 @@ function ExportTab({ result, taskId }: { result: AnalysisResult; taskId: string 
         const data = await resp.json();
         throw new Error(data.error || '导出失败');
       }
-      // Download the file
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = type.includes('ats')
-        ? `${result.jd_profile.job_title}_简历_ATS.txt`
-        : type.includes('cheat')
-          ? `${result.jd_profile.job_title}_面试小抄.html`
-          : `${result.jd_profile.job_title}_${type}.html`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      const html = await resp.text();
+      const win = window.open('', '_blank');
+      if (!win) {
+        throw new Error('浏览器阻止了新窗口，请允许弹窗后重试');
+      }
+      win.document.write(html);
+      win.document.close();
     } catch (err) {
       setExportError(err instanceof Error ? err.message : '导出失败');
     } finally {
@@ -543,8 +560,8 @@ function ExportTab({ result, taskId }: { result: AnalysisResult; taskId: string 
           disabled={exporting !== null}
           className="text-left p-4 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all disabled:opacity-50"
         >
-          <div className="text-sm font-medium text-gray-900">美化排版版简历</div>
-          <div className="text-xs text-gray-500 mt-1">HTML 格式，可在浏览器打印为 PDF</div>
+          <div className="text-sm font-medium text-gray-900">美化排版版简历 (PDF)</div>
+          <div className="text-xs text-gray-500 mt-1">浏览器打印预览 → 另存为 PDF，支持中文</div>
         </button>
 
         <button
@@ -552,8 +569,8 @@ function ExportTab({ result, taskId }: { result: AnalysisResult; taskId: string 
           disabled={exporting !== null}
           className="text-left p-4 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all disabled:opacity-50"
         >
-          <div className="text-sm font-medium text-gray-900">面试押题 - 完整备战版</div>
-          <div className="text-xs text-gray-500 mt-1">包含问题、考察点、思路和话术</div>
+          <div className="text-sm font-medium text-gray-900">面试押题 - 完整备战版 (PDF)</div>
+          <div className="text-xs text-gray-500 mt-1">含问题、考察点、回答思路，浏览器打印为 PDF</div>
         </button>
 
         <button
@@ -561,14 +578,14 @@ function ExportTab({ result, taskId }: { result: AnalysisResult; taskId: string 
           disabled={exporting !== null}
           className="text-left p-4 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all disabled:opacity-50"
         >
-          <div className="text-sm font-medium text-gray-900">面试押题 - 精简小抄版</div>
-          <div className="text-xs text-gray-500 mt-1">仅包含问题和回答要点</div>
+          <div className="text-sm font-medium text-gray-900">面试押题 - 精简小抄版 (PDF)</div>
+          <div className="text-xs text-gray-500 mt-1">仅问题与要点，A4 纸一页打完</div>
         </button>
       </div>
 
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
         <p className="text-xs text-blue-700">
-          提示：美化版和面试题导出为 HTML 格式，打开后使用浏览器"打印 → 另存为 PDF"即可生成 PDF 文件。
+          点击后自动打开新窗口和打印预览，选择"另存为 PDF"即可保存。支持中文排版，A4 纸张。
         </p>
       </div>
     </div>

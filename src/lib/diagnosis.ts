@@ -1,4 +1,5 @@
 import { callLLMWithJson } from './llm';
+import { ResumeDiagnosisSchema } from './validation-schema';
 import type { JDProfile, ResumeProfile, MatchResult, ResumeDiagnosis, RiskItem } from '@/types';
 
 function generateRuleBasedRiskItems(resume: ResumeProfile): RiskItem[] {
@@ -106,12 +107,7 @@ Resume:
 Match Score: ${match.overall_score}/100`;
 
   try {
-    const llmResult = await callLLMWithJson<{
-      matched: string[];
-      partial: string[];
-      missing: string[];
-      rewrite_suggestions: { before: string; after: string; reason: string }[];
-    }>(prompt);
+    const llmResult = await callLLMWithJson(prompt, { schema: ResumeDiagnosisSchema });
 
     return {
       matched: [...new Set([...matched, ...(llmResult.matched || [])])],
