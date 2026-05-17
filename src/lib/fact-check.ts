@@ -1,41 +1,40 @@
 /**
- * Rule-based fact-checking for LLM-generated resume optimizations.
- * Verifies that no new concrete facts (numbers, companies, schools,
- * certifications) are introduced that didn't exist in the original.
+ * Rule-based fact checking for LLM-generated resume optimizations.
+ * High precision is more important than recall here: noisy warnings reduce trust.
  */
 
-// Extract all numeric values from text (including percentages, ranges)
 function extractNumbers(text: string): string[] {
-  const results: string[] = [];
-  // Matches: 1200w+, 800w, 3年, 90%, 20+, 4.5, [xxx]
-  const patterns = [
-    /\[?\d+[\.\d]*\s*[wW%年+]??\]?/g,
-    /\d{3,}/g, // standalone 3+ digit numbers
-  ];
-  for (const p of patterns) {
-    const matches = text.match(p);
-    if (matches) results.push(...matches);
-  }
-  return [...new Set(results.map((s) => s.trim()))];
+  const matches = text.match(/\[?\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?\s*(?:%|w|W|万|亿|人|家|台|个|年|月|次|场|\+)?\]?/g);
+  return matches ? [...new Set(matches.map((s) => s.trim()))] : [];
 }
 
-// Extract potential company/institution names (Chinese orgs usually 2-8 chars)
 function extractOrgNames(text: string): string[] {
-  // Look for known suffixes that indicate organizations
-  const suffixPattern = /([一-鿿]{2,8}(?:公司|集团|大学|学院|研究院|研究所|银行|局|中心|平台|系统))/g;
-  const matches = text.match(suffixPattern);
+  const suffixes = '(?:有限公司|有限责任公司|集团|大学|学院|研究院|研究所|银行|证券|基金|保险|科技公司|软件公司)';
+  const matches = text.match(new RegExp(`[\\u4e00-\\u9fa5A-Za-z0-9]{2,24}${suffixes}`, 'g'));
   return matches ? [...new Set(matches)] : [];
 }
 
-// Check if a number from the optimized version exists (or is close to) something in the original
+function normalizeNumber(value: string): number | null {
+  const cleaned = value.replace(/[^\d.-]/g, '');
+  if (!cleaned) return null;
+  const parsed = Number(cleaned.split('-')[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isPlaceholder(text: string, num: string): boolean {
+  const idx = text.indexOf(num);
+  if (idx === -1) return false;
+  const left = text.lastIndexOf('[', idx);
+  const right = text.indexOf(']', idx);
+  return left !== -1 && right !== -1 && left < idx && idx < right;
+}
+
 function isNumberPlausible(optNum: string, origNums: string[]): boolean {
-  const val = parseFloat(optNum.replace(/[wW+%\[\]]/g, ''));
-  if (isNaN(val)) return false;
-  // Check for exact match or close match
-  return origNums.some((on) => {
-    const ov = parseFloat(on.replace(/[wW+%\[\]]/g, ''));
-    if (isNaN(ov)) return false;
-    return Math.abs(val - ov) < 0.01; // exact or very close
+  const val = normalizeNumber(optNum);
+  if (val === null) return false;
+  return origNums.some((original) => {
+    const originalVal = normalizeNumber(original);
+    return originalVal !== null && Math.abs(val - originalVal) < 0.01;
   });
 }
 
@@ -45,72 +44,47 @@ export interface FactCheckIssue {
   severity: 'warning' | 'error';
 }
 
-const KNOWN_EDU_KEYWORDS = ['大学', '学院', '研究生', '博士', '硕士', '本科', '学历'];
+const CREDENTIAL_KEYWORDS = ['博士', '硕士', '本科', 'MBA', 'PMP', 'CPA', '证书', '认证'];
 
 export function verifyOptimizedResume(
   originalText: string,
   optimizedText: string
 ): FactCheckIssue[] {
   const issues: FactCheckIssue[] = [];
-  const origLower = originalText.toLowerCase();
+  const originalLower = originalText.toLowerCase();
+  const originalNumbers = extractNumbers(originalText);
 
-  // 1. Number check — don't allow new metrics
-  const origNums = extractNumbers(originalText);
-  const optNums = extractNumbers(optimizedText);
-
-  // Also check numbers in [placeholder] format — these are OK (marked as uncertain)
-  const placeholders = optimizedText.match(/\[待补充\]|\[placeholder\]|\[.*?\]/gi) || [];
-
-  for (const num of optNums) {
-    // Skip numbers in known placeholder brackets
-    if (placeholders.some((p) => p.includes(num))) continue;
-    // Skip years (4-digit numbers)
-    const val = parseFloat(num.replace(/[wW+%\[\]]/g, ''));
-    if (!isNaN(val) && val > 1900 && val < 2100) continue;
-    // Check if plausible
-    if (!isNumberPlausible(num, origNums)) {
-      // Check if it's in the original text as-is
-      if (!origLower.includes(num.toLowerCase())) {
-        issues.push({
-          type: 'new_number',
-          detail: `优化版本出现了原文没有的数据: "${num}"`,
-          severity: 'warning',
-        });
-      }
+  for (const num of extractNumbers(optimizedText)) {
+    if (isPlaceholder(optimizedText, num)) continue;
+    const val = normalizeNumber(num);
+    if (val !== null && val > 1900 && val < 2100) continue;
+    if (!originalLower.includes(num.toLowerCase()) && !isNumberPlausible(num, originalNumbers)) {
+      issues.push({
+        type: 'new_number',
+        detail: `优化版本出现原文未找到的数据：${num}`,
+        severity: 'warning',
+      });
     }
   }
 
-  // 2. Organization check
-  const origOrgs = extractOrgNames(originalText);
-  const optOrgs = extractOrgNames(optimizedText);
-
-  for (const org of optOrgs) {
-    if (!origOrgs.includes(org) && !origLower.includes(org.toLowerCase())) {
+  const originalOrgs = extractOrgNames(originalText);
+  for (const org of extractOrgNames(optimizedText)) {
+    if (!originalOrgs.includes(org) && !originalLower.includes(org.toLowerCase())) {
       issues.push({
         type: 'new_organization',
-        detail: `优化版本出现了原文没有的组织名称: "${org}"`,
+        detail: `优化版本出现原文未找到的组织名称：${org}`,
         severity: 'error',
       });
     }
   }
 
-  // 3. Education/credential check
-  for (const kw of KNOWN_EDU_KEYWORDS) {
-    const origIdx = origLower.indexOf(kw);
-    if (origIdx === -1) {
-      // Check if optimized text newly introduces education keywords
-      const optIdx = optimizedText.indexOf(kw);
-      if (optIdx !== -1) {
-        // Extract the context around the keyword
-        const start = Math.max(0, optIdx - 20);
-        const end = Math.min(optimizedText.length, optIdx + 20);
-        const context = optimizedText.slice(start, end);
-        issues.push({
-          type: 'new_credential',
-          detail: `原文未提及学历信息，优化版本新增: "...${context}..."`,
-          severity: 'error',
-        });
-      }
+  for (const keyword of CREDENTIAL_KEYWORDS) {
+    if (!originalText.includes(keyword) && optimizedText.includes(keyword)) {
+      issues.push({
+        type: 'new_credential',
+        detail: `优化版本新增了原文未明确出现的学历/证书关键词：${keyword}`,
+        severity: 'warning',
+      });
     }
   }
 
@@ -119,14 +93,15 @@ export function verifyOptimizedResume(
 
 export function formatFactCheckWarning(issues: FactCheckIssue[]): string {
   if (issues.length === 0) return '';
-  const errors = issues.filter((i) => i.severity === 'error');
-  const warnings = issues.filter((i) => i.severity === 'warning');
+  const errors = issues.filter((issue) => issue.severity === 'error');
+  const warnings = issues.filter((issue) => issue.severity === 'warning');
   const parts: string[] = [];
+
   if (errors.length > 0) {
-    parts.push(`⚠️ 以下信息原文未找到，请确认未虚构：\n${errors.map((e) => `  - ${e.detail}`).join('\n')}`);
+    parts.push(`以下信息在原文中未找到，请确认未虚构：\n${errors.map((issue) => `- ${issue.detail}`).join('\n')}`);
   }
   if (warnings.length > 0) {
-    parts.push(`💡 以下数据原文未直接出现，建议核实：\n${warnings.map((e) => `  - ${e.detail}`).join('\n')}`);
+    parts.push(`以下信息建议核实后再使用：\n${warnings.map((issue) => `- ${issue.detail}`).join('\n')}`);
   }
   return parts.join('\n\n');
 }

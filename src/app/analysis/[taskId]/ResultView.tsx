@@ -92,6 +92,39 @@ function OverviewTab({ result }: { result: AnalysisResult }) {
 
   return (
     <div className="space-y-6">
+      {match_result.fit_summary && (
+        <section className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <h2 className="text-sm font-medium text-blue-900 mb-2">匹配结论</h2>
+          <p className="text-sm text-blue-800 leading-relaxed">{match_result.fit_summary}</p>
+        </section>
+      )}
+
+      {match_result.requirement_matches && match_result.requirement_matches.length > 0 && (
+        <section className="bg-white border border-gray-200 rounded-lg p-4">
+          <h2 className="text-sm font-medium text-gray-900 mb-3">岗位要求 → 简历证据</h2>
+          <div className="space-y-2">
+            {match_result.requirement_matches.slice(0, 10).map((item, i) => (
+              <div key={`${item.requirement}-${i}`} className="border border-gray-100 rounded-lg p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">{item.requirement}</p>
+                    <p className="text-xs text-gray-500 mt-1">{item.gap}</p>
+                  </div>
+                  <EvidenceStatusBadge status={item.status} />
+                </div>
+                {item.evidence.length > 0 && (
+                  <ul className="mt-2 space-y-1">
+                    {item.evidence.slice(0, 2).map((ev, idx) => (
+                      <li key={idx} className="text-xs text-gray-600 leading-relaxed">证据：{ev}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Dimensions */}
       <section>
         <h2 className="text-sm font-medium text-gray-900 mb-3">分维度评分</h2>
@@ -237,8 +270,26 @@ function DimStatusBadge({ status }: { status: string }) {
   );
 }
 
+function EvidenceStatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    strong: 'bg-green-50 text-green-700 border-green-200',
+    transferable: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+    insufficient: 'bg-red-50 text-red-700 border-red-200',
+  };
+  const labels: Record<string, string> = {
+    strong: '强证据',
+    transferable: '可迁移',
+    insufficient: '证据不足',
+  };
+  return (
+    <span className={`shrink-0 text-xs px-2 py-0.5 rounded border ${colors[status] || ''}`}>
+      {labels[status] || status}
+    </span>
+  );
+}
+
 // ============ Optimization Tab ============
-function OptimizationTab({ result, resultId, taskId }: { result: AnalysisResult; resultId: string; taskId: string }) {
+function OptimizationTab({ result, taskId }: { result: AnalysisResult; resultId: string; taskId: string }) {
   const { optimized_resume } = result;
   const [editedText, setEditedText] = useState(optimized_resume.optimized_resume);
   const [isEditing, setIsEditing] = useState(false);
@@ -585,7 +636,7 @@ function ExportTab({ result, taskId }: { result: AnalysisResult; taskId: string 
 
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
         <p className="text-xs text-blue-700">
-          点击后自动打开新窗口和打印预览，选择"另存为 PDF"即可保存。支持中文排版，A4 纸张。
+          点击后自动打开新窗口和打印预览，选择「另存为 PDF」即可保存。支持中文排版，A4 纸张。
         </p>
       </div>
     </div>

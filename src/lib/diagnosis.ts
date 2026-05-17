@@ -1,6 +1,6 @@
 import { callLLMWithJson } from './llm';
 import { ResumeDiagnosisSchema } from './validation-schema';
-import type { JDProfile, ResumeProfile, MatchResult, ResumeDiagnosis, RiskItem } from '@/types';
+import type { JDProfile, MatchResult, ResumeDiagnosis, ResumeProfile, RiskItem } from '@/types';
 
 function generateRuleBasedRiskItems(resume: ResumeProfile): RiskItem[] {
   const risks: RiskItem[] = [];
@@ -11,31 +11,33 @@ function generateRuleBasedRiskItems(resume: ResumeProfile): RiskItem[] {
         type: 'missing_metric',
         source: project.name || project.source_text.substring(0, 50),
         issue: '项目缺少量化结果指标',
-        suggestion: '补充效率提升、转化率、成本下降等数据。如果没有精确数据，可注明数据范围或待补充。',
+        suggestion: '补充效率提升、转化率、成本下降、客户数量、交付周期等数据；没有精确数据时使用待确认占位符。',
         risk_level: 'medium',
       });
     }
-    const vagueVerbs = ['负责', '参与', '协助', '帮忙'];
-    for (const action of project.actions) {
-      if (vagueVerbs.some((v) => action.includes(v))) {
-        risks.push({
-          type: 'vague_expression',
-          source: action,
-          issue: `使用了"${vagueVerbs.find((v) => action.includes(v))}"等模糊动词`,
-          suggestion: `建议改为"主导""推动""交付"等更强动作的词汇，突出个人贡献。`,
-          risk_level: 'low',
-        });
-        break;
-      }
-    }
+  }
+
+  const vague = resume.projects
+    .flatMap((project) => project.actions)
+    .filter((action) => /负责|参与|协助|配合/.test(action))
+    .slice(0, 3);
+
+  for (const action of vague) {
+    risks.push({
+      type: 'vague_expression',
+      source: action,
+      issue: '存在偏职责描述的表达',
+      suggestion: '建议补充目标、动作、协作对象和结果，但不要把参与经历直接升级为主导。',
+      risk_level: 'low',
+    });
   }
 
   if (resume.metrics.length === 0) {
     risks.push({
       type: 'no_metrics',
       source: '整体简历',
-      issue: '整份简历缺少任何量化数据',
-      suggestion: '尽可能为每个项目补充至少一个量化指标，如规模、效率提升、用户数等。',
+      issue: '整份简历缺少量化数据',
+      suggestion: '至少为核心项目补充一个结果指标或业务影响。',
       risk_level: 'high',
     });
   }
@@ -43,28 +45,34 @@ function generateRuleBasedRiskItems(resume: ResumeProfile): RiskItem[] {
   return risks;
 }
 
-const DIAGNOSIS_LLM_PROMPT = `You are a professional resume diagnostic analyst. Based on the JD requirements, resume profile, and match result, generate a comprehensive resume diagnosis.
+const REWRITE_SUGGESTION_PROMPT = `You are a resume diagnosis assistant. Generate rewrite suggestions only.
 
-Return a JSON object with this exact structure:
+Return JSON:
 {
-  "matched": ["list of aspects where the resume meets JD requirements"],
-  "partial": ["list of aspects where the resume partially meets requirements"],
-  "missing": ["list of aspects that are missing from the resume"],
+  "matched": [],
+  "partial": [],
+  "missing": [],
   "rewrite_suggestions": [
-    {
-      "before": "original text from resume",
-      "after": "suggested improved version",
-      "reason": "why this change is recommended"
-    }
+    {"before": "original text", "after": "safer rewritten text", "reason": "why"}
   ]
 }
 
 Rules:
-- matched, partial, missing should be specific and actionable.
-- rewrite_suggestions should focus on improving expression, not fabricating experience.
-- Do NOT suggest fabricating metrics or experience.
-- If there are no specific rewrite suggestions, provide general improvement suggestions.
-- Return ONLY valid JSON, no markdown formatting.`;
+- Do not classify matched/missing; leave matched/partial/missing as empty arrays. The system handles classification.
+- Suggestions must be evidence-bounded.
+- If a JD term is not directly evidenced, use conservative wording such as "可沉淀为", "支持", "参与", "形成可复用经验"; do not directly claim it.
+- Do not add new metrics, deep interviews, surveys, white papers, or POC ownership unless present in source text.
+- Return ONLY valid JSON.`;
+
+function dedupeByRequirement(items: string[]): string[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = item.split('：')[0].trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 export async function generateDiagnosis(
   jd: JDProfile,
@@ -72,52 +80,42 @@ export async function generateDiagnosis(
   match: MatchResult
 ): Promise<ResumeDiagnosis> {
   const ruleRisks = generateRuleBasedRiskItems(resume);
+  const requirementMatches = match.requirement_matches || [];
 
-  // Build matched/partial/missing from dimension data
-  const matched: string[] = [];
-  const partial: string[] = [];
-  const missing: string[] = [];
+  const matched = dedupeByRequirement(requirementMatches
+    .filter((item) => item.status === 'strong')
+    .map((item) => `${item.requirement}：已有明确证据。${item.evidence[0] || ''}`));
 
-  for (const dim of match.dimensions) {
-    if (dim.status === 'matched') {
-      matched.push(`${dim.name}: ${dim.matched_items.join('、')}`);
-    } else if (dim.status === 'partial') {
-      partial.push(`${dim.name}: ${dim.explanation}`);
-    } else {
-      missing.push(`${dim.name}: ${dim.missing_items.join('、') || dim.explanation}`);
-    }
-  }
+  const partial = dedupeByRequirement(requirementMatches
+    .filter((item) => item.status === 'transferable')
+    .map((item) => `${item.requirement}：有可迁移证据，建议保守改写。${item.evidence[0] || item.gap}`));
 
-  // Use LLM for rewrite suggestions
-  const prompt = `${DIAGNOSIS_LLM_PROMPT}
+  const missing = dedupeByRequirement(requirementMatches
+    .filter((item) => item.status === 'insufficient')
+    .map((item) => `${item.requirement}：证据不足，不建议直接写入简历正文。${item.gap}`));
 
-JD:
-- Title: ${jd.job_title}
-- Required Skills: ${jd.required_skills.join(', ')}
-- Responsibilities: ${jd.responsibilities.join(', ')}
-- Soft Skills: ${jd.soft_skills.join(', ')}
+  const prompt = `${REWRITE_SUGGESTION_PROMPT}
 
-Resume:
-- Name: ${resume.candidate_name}
-- Title: ${resume.target_title}
-- Skills: ${resume.skills.join(', ')}
-- Projects: ${resume.projects.map((p) => p.source_text).join('\n')}
-- Metrics: ${resume.metrics.join(', ')}
+Job title: ${jd.job_title}
+Role family: ${jd.role_family || 'general'}
 
-Match Score: ${match.overall_score}/100`;
+Resume projects:
+${resume.projects.map((p) => `- ${p.name}: ${p.source_text}`).join('\n')}
+
+Requirement evidence matches:
+${requirementMatches.map((m) => `- ${m.requirement} | ${m.status} | guidance=${m.rewrite_guidance} | evidence=${m.evidence.slice(0, 2).join(' || ')}`).join('\n')}`;
 
   try {
     const llmResult = await callLLMWithJson(prompt, { schema: ResumeDiagnosisSchema });
 
     return {
-      matched: [...new Set([...matched, ...(llmResult.matched || [])])],
-      partial: [...new Set([...partial, ...(llmResult.partial || [])])],
-      missing: [...new Set([...missing, ...(llmResult.missing || [])])],
+      matched,
+      partial,
+      missing,
       risk_items: ruleRisks,
       rewrite_suggestions: llmResult.rewrite_suggestions || [],
     };
   } catch {
-    // Fallback to rule-based only if LLM fails
     return {
       matched,
       partial,

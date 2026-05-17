@@ -1,6 +1,8 @@
 // ============ JD Profile ============
 export interface JDProfile {
   job_title: string;
+  raw_job_title?: string;
+  role_family?: JobRoleFamily;
   required_skills: string[];
   preferred_skills: string[];
   soft_skills: string[];
@@ -9,6 +11,25 @@ export interface JDProfile {
   business_goals: string[];
   responsibilities: string[];
   interview_focus: string[];
+  requirement_categories?: JDRequirementCategories;
+}
+
+export type JobRoleFamily =
+  | 'ai_product_operations'
+  | 'product_operations'
+  | 'solution'
+  | 'product_manager'
+  | 'data'
+  | 'sales'
+  | 'engineering'
+  | 'general';
+
+export interface JDRequirementCategories {
+  must_have_capabilities: string[];
+  work_activities: string[];
+  deliverables: string[];
+  soft_skills: string[];
+  bonus_points: string[];
 }
 
 // ============ Resume Profile ============
@@ -25,11 +46,22 @@ export interface ResumeProfile {
   target_title: string;
   skills: string[];
   industries: string[];
+  capabilities?: string[];
+  evidence_units?: EvidenceUnit[];
   experience_years: number;
   projects: Project[];
   education: string[];
   metrics: string[];
   risk_items: string[];
+}
+
+export interface EvidenceUnit {
+  id: string;
+  evidence: string;
+  source_project: string;
+  capabilities: string[];
+  metrics: string[];
+  strength: 'strong' | 'medium' | 'weak';
 }
 
 // ============ Match Result ============
@@ -46,8 +78,21 @@ export interface DimensionScore {
 export interface MatchResult {
   overall_score: number;
   dimensions: DimensionScore[];
+  role_family?: JobRoleFamily;
+  fit_summary?: string;
+  requirement_matches?: RequirementEvidenceMatch[];
   recommend_mode: RewriteMode;
   recommend_reason: string;
+}
+
+export interface RequirementEvidenceMatch {
+  requirement: string;
+  category: keyof JDRequirementCategories | 'other';
+  status: 'strong' | 'transferable' | 'insufficient';
+  score: number;
+  evidence: string[];
+  gap: string;
+  rewrite_guidance: 'direct' | 'conservative' | 'suggest_only';
 }
 
 // ============ Resume Diagnosis ============

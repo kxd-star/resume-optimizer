@@ -3,6 +3,17 @@ import { z } from 'zod';
 // ============ JD Profile ============
 export const JDProfileSchema = z.object({
   job_title: z.string().min(1),
+  raw_job_title: z.string().optional(),
+  role_family: z.enum([
+    'ai_product_operations',
+    'product_operations',
+    'solution',
+    'product_manager',
+    'data',
+    'sales',
+    'engineering',
+    'general',
+  ]).optional(),
   required_skills: z.array(z.string()).default([]),
   preferred_skills: z.array(z.string()).default([]),
   soft_skills: z.array(z.string()).default([]),
@@ -11,6 +22,13 @@ export const JDProfileSchema = z.object({
   business_goals: z.array(z.string()).default([]),
   responsibilities: z.array(z.string()).default([]),
   interview_focus: z.array(z.string()).default([]),
+  requirement_categories: z.object({
+    must_have_capabilities: z.array(z.string()).default([]),
+    work_activities: z.array(z.string()).default([]),
+    deliverables: z.array(z.string()).default([]),
+    soft_skills: z.array(z.string()).default([]),
+    bonus_points: z.array(z.string()).default([]),
+  }).optional(),
 });
 
 // ============ Resume Profile ============
@@ -27,6 +45,15 @@ export const ResumeProfileSchema = z.object({
   target_title: z.string().default(''),
   skills: z.array(z.string()).default([]),
   industries: z.array(z.string()).default([]),
+  capabilities: z.array(z.string()).default([]).optional(),
+  evidence_units: z.array(z.object({
+    id: z.string(),
+    evidence: z.string(),
+    source_project: z.string(),
+    capabilities: z.array(z.string()).default([]),
+    metrics: z.array(z.string()).default([]),
+    strength: z.enum(['strong', 'medium', 'weak']).default('medium'),
+  })).default([]).optional(),
   experience_years: z.number().min(0).default(0),
   projects: z.array(ProjectSchema).default([]),
   education: z.array(z.string()).default([]),
@@ -48,6 +75,17 @@ export const DimensionScoreSchema = z.object({
 export const MatchResultSchema = z.object({
   overall_score: z.number().min(0).max(100),
   dimensions: z.array(DimensionScoreSchema).default([]),
+  role_family: z.string().optional(),
+  fit_summary: z.string().default('').optional(),
+  requirement_matches: z.array(z.object({
+    requirement: z.string(),
+    category: z.string(),
+    status: z.enum(['strong', 'transferable', 'insufficient']),
+    score: z.number().min(0).max(100),
+    evidence: z.array(z.string()).default([]),
+    gap: z.string().default(''),
+    rewrite_guidance: z.enum(['direct', 'conservative', 'suggest_only']),
+  })).default([]).optional(),
   recommend_mode: z.enum(['conservative', 'standard', 'aggressive']),
   recommend_reason: z.string().default(''),
 });

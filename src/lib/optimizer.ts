@@ -3,56 +3,35 @@ import { OptimizedResumeSchema } from './validation-schema';
 import { verifyOptimizedResume, formatFactCheckWarning } from './fact-check';
 import type { JDProfile, ResumeProfile, MatchResult, ResumeDiagnosis, OptimizedResume, RewriteMode } from '@/types';
 
-const OPTIMIZER_PROMPT_TEMPLATE = `You are a professional resume writer specializing in ATS-optimized resumes.
+const OPTIMIZER_PROMPT_TEMPLATE = `You are a senior resume strategist. Rewrite the resume for the target JD using evidence-bounded language.
 
-Given the original resume, JD analysis, and match results, rewrite the resume to better align with the target position.
-
-Return a JSON object with this exact structure:
+Return JSON:
 {
-  "version": "the rewrite mode used",
-  "optimized_resume": "the complete rewritten resume text",
+  "version": "conservative/standard/aggressive",
+  "optimized_resume": "complete plain-text ATS-friendly resume",
   "changes": [
     {
       "before": "original text segment",
       "after": "rewritten text segment",
       "reason": "why this change was made",
-      "needs_confirmation": ["items the user needs to verify"]
+      "needs_confirmation": ["items the user must verify"]
     }
   ],
-  "placeholders": ["list of placeholders like [X%] that need user input"],
-  "risk_warnings": ["list of potential risks in the rewrite"]
+  "placeholders": ["placeholders such as [请确认具体数据]"],
+  "risk_warnings": ["risks in the rewrite"]
 }
 
-Rewrite Mode Guidelines:
+Evidence boundary rules:
+- If a requirement has guidance=direct, you may write it directly.
+- If guidance=conservative, use safer language such as "支持/参与/沉淀/可迁移到/形成经验", not a stronger claim.
+- If guidance=suggest_only, do NOT write it into resume body. Put it in risk_warnings or needs_confirmation only.
+- Do not add deep interview, questionnaire research, white paper, sample room, or joint POC ownership unless supported by evidence.
+- Do not invent numbers. If a number is needed, use [请补充真实数据].
+- Keep the target role title exactly as parsed from the JD.
 
-CONSERVATIVE mode:
-- Polish wording only
-- Keep all original structure and emphasis
-- Fix grammar and clarity issues
-- Do NOT change the focus of any bullet point
-
-STANDARD mode:
-- Reorganize experience to highlight JD-relevant skills
-- Strengthen action verbs (负责 -> 主导/推动)
-- Add context to achievements
-- Keep original facts intact
-
-AGGRESSIVE (冲刺) mode:
-- Strongly align with JD keywords and requirements
-- Emphasize transferable skills
-- Restructure content to highlight JD-relevant experience first
-- Maximize keyword density for ATS
-
-CRITICAL RULES - Anti-hallucination:
-1. NEVER add company names, schools, certifications not in the original resume
-2. NEVER fabricate specific numbers or metrics — use [placeholder] format
-3. NEVER upgrade "participated" to "led" without evidence in the original text
-4. NEVER claim individual credit for team achievements
-5. ALWAYS mark uncertain information with [brackets] and include in needs_confirmation
-6. If the original has no metrics, suggest adding them as [待补充]
-7. Keep all original factual claims intact — only improve expression
-
-Format the optimized_resume as a clean, well-structured plain text resume ready for ATS parsing.`;
+Role positioning:
+- For AI product operations roles, optimize toward: AI产品运营、PMM/GTM、用户/客户场景挖掘、产品反馈闭环、案例/最佳实践沉淀、数据分析和跨团队推动.
+- Do not over-transform a product operations resume into a solution architect/sales solution resume.`;
 
 export async function optimizeResume(
   originalResume: string,
@@ -63,47 +42,56 @@ export async function optimizeResume(
   mode: RewriteMode
 ): Promise<OptimizedResume> {
   const modeLabel = mode === 'conservative' ? 'CONSERVATIVE' : mode === 'standard' ? 'STANDARD' : 'AGGRESSIVE';
+  const evidenceMatrix = (match.requirement_matches || [])
+    .map((item) => `- ${item.requirement} | ${item.status} | guidance=${item.rewrite_guidance} | evidence=${item.evidence.slice(0, 2).join(' || ')} | gap=${item.gap}`)
+    .join('\n');
 
   const prompt = `${OPTIMIZER_PROMPT_TEMPLATE}
 
 Rewrite Mode: ${modeLabel}
 
-Original Resume:
-${originalResume}
-
-JD Analysis:
-- Title: ${jd.job_title}
-- Required Skills: ${jd.required_skills.join(', ')}
-- Preferred Skills: ${jd.preferred_skills.join(', ')}
+Target JD:
+- Exact title: ${jd.job_title}
+- Role family: ${jd.role_family || 'general'}
+- Required skills: ${jd.required_skills.join(', ')}
 - Responsibilities: ${jd.responsibilities.join(', ')}
-- Soft Skills: ${jd.soft_skills.join(', ')}
-- Business Goals: ${jd.business_goals.join(', ')}
-- Industries: ${jd.industries.join(', ')}
+- Deliverables: ${jd.requirement_categories?.deliverables?.join(', ') || ''}
+- Work activities: ${jd.requirement_categories?.work_activities?.join(', ') || ''}
 
-Current Match Score: ${match.overall_score}/100
-Recommended Mode: ${match.recommend_mode}
+Match summary:
+- Score: ${match.overall_score}/100
+- Fit summary: ${match.fit_summary || ''}
+- Recommendation: ${match.recommend_reason}
 
-Diagnosis Highlights:
-- Matched: ${diagnosis.matched.slice(0, 3).join('; ')}
-- Missing: ${diagnosis.missing.slice(0, 3).join('; ')}`;
+Requirement-to-evidence matrix:
+${evidenceMatrix}
+
+Diagnosis:
+- Strong evidence: ${diagnosis.matched.slice(0, 6).join('; ')}
+- Transferable evidence: ${diagnosis.partial.slice(0, 6).join('; ')}
+- Evidence gaps: ${diagnosis.missing.slice(0, 6).join('; ')}
+
+Original Resume:
+${originalResume}`;
 
   try {
     const result = await callLLMWithJson(prompt, { maxTokens: 8192, schema: OptimizedResumeSchema });
+    const fcIssues = verifyOptimizedResume(originalResume, result.optimized_resume || '');
+    const fcMsg = formatFactCheckWarning(fcIssues);
 
     return {
       version: mode,
       optimized_resume: result.optimized_resume || '',
-      changes: result.changes || [],
+      changes: (result.changes || []).map((change) => ({
+        ...change,
+        needs_confirmation: change.needs_confirmation || [],
+      })),
       placeholders: result.placeholders || [],
       risk_warnings: [
         ...(result.risk_warnings || []),
-        ...(() => {
-          const fcIssues = verifyOptimizedResume(originalResume, result.optimized_resume || '');
-          const fcMsg = formatFactCheckWarning(fcIssues);
-          return fcMsg ? [fcMsg] : [];
-        })(),
+        ...(fcMsg ? [fcMsg] : []),
       ],
-    } as OptimizedResume;
+    };
   } catch (error) {
     throw new Error(`简历优化失败: ${error instanceof Error ? error.message : '未知错误'}`);
   }
