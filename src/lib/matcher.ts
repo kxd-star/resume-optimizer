@@ -8,11 +8,13 @@ import type {
   RequirementEvidenceMatch,
   ResumeProfile,
 } from '@/types';
-import { generateSemanticRequirementMatches, semanticMatchKey } from './semantic-matcher';
+import { generateSemanticRequirementMatches, semanticMatchKey, semanticMatchId } from './semantic-matcher';
 
 const THRESHOLD_CONSERVATIVE = Number(process.env.THRESHOLD_CONSERVATIVE) || 80;
 const THRESHOLD_STANDARD = Number(process.env.THRESHOLD_STANDARD) || 60;
 const DEFAULT_SEMANTIC_MATCH_WEIGHT = 0.4;
+const REQUIREMENT_STRONG_SCORE = 70;
+const REQUIREMENT_TRANSFERABLE_SCORE = 50;
 
 function unique(values: string[]): string[] {
   return [...new Set(values.map((v) => v.trim()).filter(Boolean))];
@@ -156,38 +158,17 @@ function semanticWeight(): number {
 function blendScores(
   ruleScore: number,
   semanticScore: number,
-  ruleStatus: RequirementEvidenceMatch['status'],
-  semanticStatus: RequirementEvidenceMatch['status'],
   hasSemanticEvidence: boolean
 ): number {
   if (!hasSemanticEvidence) return ruleScore;
 
   const sWeight = semanticWeight();
-  const blended = Math.round(ruleScore * (1 - sWeight) + semanticScore * sWeight);
-
-  if (ruleStatus === 'strong') {
-    return Math.max(ruleScore, blended);
-  }
-
-  if (semanticStatus === 'strong') {
-    if (ruleStatus === 'insufficient') {
-      return Math.max(blended, Math.round(semanticScore * 0.85));
-    }
-    return Math.max(blended, Math.round(ruleScore * 0.45 + semanticScore * 0.55));
-  }
-
-  return blended;
+  return Math.round(ruleScore * (1 - sWeight) + semanticScore * sWeight);
 }
 
-function statusFromFinalScore(
-  finalScore: number,
-  ruleStatus: RequirementEvidenceMatch['status'],
-  semanticStatus: RequirementEvidenceMatch['status'] | undefined,
-  hasSemanticEvidence: boolean
-): RequirementEvidenceMatch['status'] {
-  if (ruleStatus === 'strong' && finalScore >= 50) return 'strong';
-  if (hasSemanticEvidence && semanticStatus === 'strong' && finalScore >= 75) return 'strong';
-  if (finalScore >= 45 && (ruleStatus !== 'insufficient' || hasSemanticEvidence)) return 'transferable';
+function statusFromFinalScore(finalScore: number): RequirementEvidenceMatch['status'] {
+  if (finalScore >= REQUIREMENT_STRONG_SCORE) return 'strong';
+  if (finalScore >= REQUIREMENT_TRANSFERABLE_SCORE) return 'transferable';
   return 'insufficient';
 }
 
@@ -212,9 +193,9 @@ async function enrichWithSemanticMatches(
 
   const evidenceById = new Map(evidenceUnits.map((unit) => [unit.id, unit]));
 
-  return ruleMatches.map((match) => {
-    const semantic = semanticMatches.get(semanticMatchKey(match.requirement, match.category))
-      || semanticMatches.get(semanticMatchKey(match.requirement));
+  return ruleMatches.map((match, index) => {
+    const semantic = semanticMatches.get(semanticMatchId(index))
+      || semanticMatches.get(semanticMatchKey(match.requirement, match.category));
     if (!semantic) return { ...match, rule_score: match.score };
 
     const semanticEvidence = semantic.evidence_ids
@@ -237,11 +218,9 @@ async function enrichWithSemanticMatches(
     const finalScore = blendScores(
       match.score,
       semantic.semantic_score,
-      match.status,
-      semantic.status,
       hasSemanticEvidence
     );
-    const status = statusFromFinalScore(finalScore, match.status, semantic.status, hasSemanticEvidence);
+    const status = statusFromFinalScore(finalScore);
 
     return {
       ...match,

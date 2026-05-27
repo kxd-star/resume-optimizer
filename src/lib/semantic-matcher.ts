@@ -1,8 +1,10 @@
+import { createHash } from 'crypto';
 import { z } from 'zod';
 import { callLLMWithJson } from './llm';
 import type { EvidenceUnit, JDProfile, RequirementEvidenceMatch, ResumeProfile } from '@/types';
 
 const SemanticRequirementMatchSchema = z.object({
+  requirement_id: z.string().optional(),
   requirement: z.string().min(1),
   category: z.string().optional(),
   semantic_score: z.number().min(0).max(100),
@@ -26,6 +28,7 @@ Return JSON only:
 {
   "matches": [
     {
+      "requirement_id": "req_1",
       "requirement": "exact requirement text",
       "category": "same category when provided",
       "semantic_score": 0,
@@ -40,6 +43,7 @@ Return JSON only:
 Rules:
 - Use only the provided evidence units. Do not infer experience that is not grounded in evidence.
 - evidence_ids must be IDs from the evidence list. If no evidence supports the requirement, return an empty array.
+- requirement_id must be copied exactly from the provided requirement item.
 - strong means the resume has direct or clearly equivalent evidence.
 - transferable means the resume has adjacent evidence that can be safely reframed without inventing facts.
 - insufficient means evidence is weak, missing, or only aspirational.
@@ -47,9 +51,27 @@ Rules:
 - The explanation should help the candidate understand the gap or the exact evidence connection.
 - Return one match for each requirement.`;
 
+const SEMANTIC_MATCH_CACHE_LIMIT = 50;
+const semanticMatchCache = new Map<string, Map<string, SemanticRequirementMatch>>();
+
+function debugLog(message: string, extra?: Record<string, unknown>): void {
+  if (process.env.SEMANTIC_MATCHING_DEBUG === 'true') {
+    console.log(`[semantic-matcher] ${message}`, extra || '');
+  }
+}
+
+function warnLog(message: string, error: unknown): void {
+  const detail = error instanceof Error ? error.message : String(error);
+  console.warn(`[semantic-matcher] ${message}: ${detail}`);
+}
+
 function compactText(text: string, maxLength = 420): string {
   const cleaned = text.replace(/\s+/g, ' ').trim();
   return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength)}...` : cleaned;
+}
+
+export function semanticMatchId(index: number): string {
+  return `req_${index + 1}`;
 }
 
 function buildPrompt(
@@ -59,7 +81,7 @@ function buildPrompt(
   evidenceUnits: EvidenceUnit[]
 ): string {
   const requirements = ruleMatches.map((match, index) => ({
-    id: `req_${index + 1}`,
+    requirement_id: semanticMatchId(index),
     requirement: match.requirement,
     category: match.category,
     rule_score: match.score,
@@ -104,6 +126,18 @@ function normalizeKey(requirement: string, category?: string): string {
   return `${category || ''}:${requirement}`.toLowerCase().replace(/\s+/g, '');
 }
 
+function cacheKey(prompt: string): string {
+  return createHash('sha256').update(prompt).digest('hex');
+}
+
+function rememberCache(key: string, value: Map<string, SemanticRequirementMatch>): void {
+  if (semanticMatchCache.size >= SEMANTIC_MATCH_CACHE_LIMIT) {
+    const oldest = semanticMatchCache.keys().next().value;
+    if (oldest) semanticMatchCache.delete(oldest);
+  }
+  semanticMatchCache.set(key, new Map(value));
+}
+
 export async function generateSemanticRequirementMatches(
   jd: JDProfile,
   resume: ResumeProfile,
@@ -115,8 +149,22 @@ export async function generateSemanticRequirementMatches(
     return new Map();
   }
 
+  const prompt = buildPrompt(jd, resume, ruleMatches, evidenceUnits);
+  const key = cacheKey(prompt);
+  const cached = semanticMatchCache.get(key);
+  if (cached) {
+    debugLog('cache hit', { key, matches: cached.size });
+    return new Map(cached);
+  }
+
   try {
-    const result = await callLLMWithJson(buildPrompt(jd, resume, ruleMatches, evidenceUnits), {
+    debugLog('request semantic matches', {
+      key,
+      requirements: ruleMatches.length,
+      evidence_units: evidenceUnits.length,
+    });
+
+    const result = await callLLMWithJson(prompt, {
       maxTokens: 8192,
       temperature: 0.1,
       schema: SemanticMatchResponseSchema,
@@ -129,6 +177,7 @@ export async function generateSemanticRequirementMatches(
       const safeEvidenceIds = (item.evidence_ids || []).filter((id) => evidenceIds.has(id));
       const hasEvidence = safeEvidenceIds.length > 0;
       const safeItem: SemanticRequirementMatch = {
+        requirement_id: item.requirement_id,
         requirement: item.requirement,
         category: item.category,
         evidence_ids: safeEvidenceIds,
@@ -137,12 +186,15 @@ export async function generateSemanticRequirementMatches(
         explanation: item.explanation || '',
         confidence: item.confidence ?? 0.7,
       };
+      if (item.requirement_id) byKey.set(item.requirement_id, safeItem);
       byKey.set(normalizeKey(item.requirement, item.category), safeItem);
-      byKey.set(normalizeKey(item.requirement), safeItem);
     }
 
+    debugLog('received semantic matches', { key, matches: byKey.size });
+    rememberCache(key, byKey);
     return byKey;
-  } catch {
+  } catch (error) {
+    warnLog('failed, falling back to rule-only matching', error);
     return new Map();
   }
 }
