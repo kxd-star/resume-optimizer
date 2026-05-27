@@ -90,6 +90,12 @@ export interface RequirementEvidenceMatch {
   category: keyof JDRequirementCategories | 'other';
   status: 'strong' | 'transferable' | 'insufficient';
   score: number;
+  rule_score?: number;
+  semantic_score?: number;
+  semantic_status?: 'strong' | 'transferable' | 'insufficient';
+  semantic_evidence_ids?: string[];
+  semantic_explanation?: string;
+  semantic_confidence?: number;
   evidence: string[];
   gap: string;
   rewrite_guidance: 'direct' | 'conservative' | 'suggest_only';

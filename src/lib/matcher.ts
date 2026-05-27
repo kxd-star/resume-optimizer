@@ -8,9 +8,11 @@ import type {
   RequirementEvidenceMatch,
   ResumeProfile,
 } from '@/types';
+import { generateSemanticRequirementMatches, semanticMatchKey } from './semantic-matcher';
 
 const THRESHOLD_CONSERVATIVE = Number(process.env.THRESHOLD_CONSERVATIVE) || 80;
 const THRESHOLD_STANDARD = Number(process.env.THRESHOLD_STANDARD) || 60;
+const DEFAULT_SEMANTIC_MATCH_WEIGHT = 0.4;
 
 function unique(values: string[]): string[] {
   return [...new Set(values.map((v) => v.trim()).filter(Boolean))];
@@ -138,15 +140,128 @@ function matchRequirement(
     category,
     status,
     score,
+    rule_score: score,
     evidence,
     gap,
     rewrite_guidance: rewriteGuidance,
   };
 }
 
-function buildRequirementMatches(jd: JDProfile, resume: ResumeProfile): RequirementEvidenceMatch[] {
+function semanticWeight(): number {
+  const raw = Number(process.env.SEMANTIC_MATCH_WEIGHT);
+  if (!Number.isFinite(raw)) return DEFAULT_SEMANTIC_MATCH_WEIGHT;
+  return Math.min(0.8, Math.max(0, raw));
+}
+
+function blendScores(
+  ruleScore: number,
+  semanticScore: number,
+  ruleStatus: RequirementEvidenceMatch['status'],
+  semanticStatus: RequirementEvidenceMatch['status'],
+  hasSemanticEvidence: boolean
+): number {
+  if (!hasSemanticEvidence) return ruleScore;
+
+  const sWeight = semanticWeight();
+  const blended = Math.round(ruleScore * (1 - sWeight) + semanticScore * sWeight);
+
+  if (ruleStatus === 'strong') {
+    return Math.max(ruleScore, blended);
+  }
+
+  if (semanticStatus === 'strong') {
+    if (ruleStatus === 'insufficient') {
+      return Math.max(blended, Math.round(semanticScore * 0.85));
+    }
+    return Math.max(blended, Math.round(ruleScore * 0.45 + semanticScore * 0.55));
+  }
+
+  return blended;
+}
+
+function statusFromFinalScore(
+  finalScore: number,
+  ruleStatus: RequirementEvidenceMatch['status'],
+  semanticStatus: RequirementEvidenceMatch['status'] | undefined,
+  hasSemanticEvidence: boolean
+): RequirementEvidenceMatch['status'] {
+  if (ruleStatus === 'strong' && finalScore >= 50) return 'strong';
+  if (hasSemanticEvidence && semanticStatus === 'strong' && finalScore >= 75) return 'strong';
+  if (finalScore >= 45 && (ruleStatus !== 'insufficient' || hasSemanticEvidence)) return 'transferable';
+  return 'insufficient';
+}
+
+function rewriteGuidanceForStatus(status: RequirementEvidenceMatch['status']): RequirementEvidenceMatch['rewrite_guidance'] {
+  if (status === 'strong') return 'direct';
+  if (status === 'transferable') return 'conservative';
+  return 'suggest_only';
+}
+
+function evidenceText(unit: EvidenceUnit): string {
+  return `${unit.source_project}: ${unit.evidence}`;
+}
+
+async function enrichWithSemanticMatches(
+  jd: JDProfile,
+  resume: ResumeProfile,
+  ruleMatches: RequirementEvidenceMatch[],
+  evidenceUnits: EvidenceUnit[]
+): Promise<RequirementEvidenceMatch[]> {
+  const semanticMatches = await generateSemanticRequirementMatches(jd, resume, ruleMatches, evidenceUnits);
+  if (semanticMatches.size === 0) return ruleMatches;
+
+  const evidenceById = new Map(evidenceUnits.map((unit) => [unit.id, unit]));
+
+  return ruleMatches.map((match) => {
+    const semantic = semanticMatches.get(semanticMatchKey(match.requirement, match.category))
+      || semanticMatches.get(semanticMatchKey(match.requirement));
+    if (!semantic) return { ...match, rule_score: match.score };
+
+    const semanticEvidence = semantic.evidence_ids
+      .map((id) => evidenceById.get(id))
+      .filter((unit): unit is EvidenceUnit => Boolean(unit))
+      .map(evidenceText);
+    const hasSemanticEvidence = semanticEvidence.length > 0;
+    if (!hasSemanticEvidence && match.status !== 'insufficient') {
+      return {
+        ...match,
+        rule_score: match.score,
+        semantic_score: semantic.semantic_score,
+        semantic_status: semantic.status,
+        semantic_evidence_ids: [],
+        semantic_explanation: semantic.explanation,
+        semantic_confidence: semantic.confidence,
+      };
+    }
+
+    const finalScore = blendScores(
+      match.score,
+      semantic.semantic_score,
+      match.status,
+      semantic.status,
+      hasSemanticEvidence
+    );
+    const status = statusFromFinalScore(finalScore, match.status, semantic.status, hasSemanticEvidence);
+
+    return {
+      ...match,
+      status,
+      score: finalScore,
+      rule_score: match.score,
+      semantic_score: semantic.semantic_score,
+      semantic_status: semantic.status,
+      semantic_evidence_ids: semantic.evidence_ids,
+      semantic_explanation: semantic.explanation,
+      semantic_confidence: semantic.confidence,
+      evidence: unique([...match.evidence, ...semanticEvidence]),
+      gap: semantic.explanation || match.gap,
+      rewrite_guidance: rewriteGuidanceForStatus(status),
+    };
+  });
+}
+
+function buildRequirementMatches(jd: JDProfile, resume: ResumeProfile, evidenceUnits: EvidenceUnit[]): RequirementEvidenceMatch[] {
   const categories = getRequirementCategories(jd);
-  const evidenceUnits = allEvidence(resume);
   const matches: RequirementEvidenceMatch[] = [];
 
   (Object.keys(categories) as (keyof JDRequirementCategories)[]).forEach((category) => {
@@ -353,7 +468,9 @@ function fitSummary(jd: JDProfile, matches: RequirementEvidenceMatch[]): string 
 }
 
 export async function calculateMatch(jd: JDProfile, resume: ResumeProfile): Promise<MatchResult> {
-  const requirementMatches = buildRequirementMatches(jd, resume);
+  const evidenceUnits = allEvidence(resume);
+  const ruleMatches = buildRequirementMatches(jd, resume, evidenceUnits);
+  const requirementMatches = await enrichWithSemanticMatches(jd, resume, ruleMatches, evidenceUnits);
   const dimensions = buildDimensions(jd, resume, requirementMatches);
   const weights = weightsFor(jd.role_family, dimensions);
 
