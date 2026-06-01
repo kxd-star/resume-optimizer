@@ -7,7 +7,10 @@ let db: any = null;
 let initPromise: Promise<any> | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-const DB_PATH = path.join(process.cwd(), 'data', 'resume-optimizer.db');
+const DATA_DIR = process.env.VERCEL
+  ? '/tmp/data'
+  : path.join(process.cwd(), 'data');
+const DB_PATH = path.join(DATA_DIR, 'resume-optimizer.db');
 const WASM_PATH = path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm');
 const dbMutex = new Mutex();
 
