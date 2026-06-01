@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAnalysisTask } from '@/lib/task-manager';
 import { validateCreateAnalysisRequest } from '@/lib/validation';
-import type { CreateAnalysisRequest, CreateAnalysisResponse, RewriteMode } from '@/types';
+import type { CreateAnalysisRequest, RewriteMode } from '@/types';
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
 
     const { jd_text, resume_text, rewrite_mode, question_count } = validation.data;
 
-    const taskId = await createAnalysisTask({
+    const { taskId, result } = await createAnalysisTask({
       jd_text,
       resume_text,
       rewrite_mode: rewrite_mode as RewriteMode,
@@ -25,12 +25,11 @@ export async function POST(request: NextRequest) {
       client_session_id: body.client_session_id,
     });
 
-    const response: CreateAnalysisResponse = {
+    return NextResponse.json({
       task_id: taskId,
-      status: 'running',
-    };
-
-    return NextResponse.json(response, { status: 201 });
+      status: 'completed',
+      result,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : '创建分析任务失败';
     return NextResponse.json({ error: message }, { status: 500 });

@@ -205,6 +205,7 @@ export interface CreateAnalysisRequest {
 export interface CreateAnalysisResponse {
   task_id: string;
   status: TaskStatus;
+  result?: AnalysisResult;
 }
 
 export interface TaskStatusResponse {

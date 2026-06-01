@@ -137,6 +137,14 @@ export default function HomePage() {
 
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || '创建分析任务失败');
+
+      // Store result in sessionStorage for the result page
+      if (data.result) {
+        try {
+          sessionStorage.setItem(`ar_${data.task_id}`, JSON.stringify(data.result));
+        } catch { /* sessionStorage may be full */ }
+      }
+
       router.push(`/analysis/${data.task_id}`);
     } catch (err) {
       setErrors({ general: err instanceof Error ? err.message : '请求失败，请稍后重试' });

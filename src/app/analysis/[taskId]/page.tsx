@@ -26,6 +26,25 @@ export default function AnalysisPage() {
   useEffect(() => {
     if (!taskId) return;
 
+    // Check for pre-loaded result from synchronous analysis
+    const preloaded = sessionStorage.getItem(`ar_${taskId}`);
+    if (preloaded) {
+      try {
+        const result: AnalysisResult = JSON.parse(preloaded);
+        sessionStorage.removeItem(`ar_${taskId}`);
+        setState({
+          status: 'completed',
+          result,
+          resultId: '',
+          message: '分析完成',
+        });
+        saveToHistory(taskId, result);
+        return;
+      } catch {
+        // Fall through to polling
+      }
+    }
+
     let cancelled = false;
     let pollCount = 0;
 

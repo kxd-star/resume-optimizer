@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { insertTask, updateTaskStatus, insertResult, getTask, getResultByTaskId } from './db';
+import { insertTask, insertResult, getTask, getResultByTaskId } from './db';
 import { parseJD } from './jd-parser';
 import { parseResume } from './resume-parser';
 import { calculateMatch } from './matcher';
@@ -7,22 +7,13 @@ import { generateDiagnosis } from './diagnosis';
 import { optimizeResume } from './optimizer';
 import { generateInterviewQuestions } from './interview-generator';
 import type {
-  TaskStatus,
-  ProgressStep,
   JDProfile,
   ResumeProfile,
   AnalysisResult,
+  TaskStatus,
+  ProgressStep,
   RewriteMode,
 } from '@/types';
-
-// In-memory task state
-const taskStates = new Map<string, {
-  status: TaskStatus;
-  progress_step: ProgressStep;
-  error?: string;
-  result?: AnalysisResult;
-  result_id?: string;
-}>();
 
 async function runAnalysis(
   taskId: string,
@@ -32,50 +23,41 @@ async function runAnalysis(
     rewrite_mode?: string;
     question_count?: number;
   }
-): Promise<void> {
-  let jdProfile: JDProfile;
-  let resumeProfile: ResumeProfile;
+): Promise<{ result: AnalysisResult; resultId: string }> {
+  const [jdProfile, resumeProfile] = await Promise.all([
+    parseJD(params.jd_text) as Promise<JDProfile>,
+    parseResume(params.resume_text) as Promise<ResumeProfile>,
+  ]);
 
+  const matchResult = await calculateMatch(jdProfile, resumeProfile);
+  const diagnosis = await generateDiagnosis(jdProfile, resumeProfile, matchResult);
+  const optimizedResume = await optimizeResume(
+    params.resume_text,
+    jdProfile,
+    resumeProfile,
+    matchResult,
+    diagnosis,
+    (params.rewrite_mode as RewriteMode) || 'standard'
+  );
+  const interviewQuestions = await generateInterviewQuestions(
+    jdProfile,
+    resumeProfile,
+    matchResult,
+    params.question_count || 8
+  );
+
+  const resultId = `result_${uuidv4().replace(/-/g, '').substring(0, 12)}`;
+  const result: AnalysisResult = {
+    jd_profile: jdProfile,
+    resume_profile: resumeProfile,
+    match_result: matchResult,
+    diagnosis,
+    optimized_resume: optimizedResume,
+    interview_questions: interviewQuestions,
+  };
+
+  // Best-effort DB save (works locally, may not persist on Vercel)
   try {
-    // Step 1-2: Parse JD and Resume in parallel
-    setTaskProgress(taskId, 'running', 'jd_parsing');
-    const [jdResult, resumeResult] = await Promise.all([
-      parseJD(params.jd_text),
-      parseResume(params.resume_text),
-    ]);
-    jdProfile = jdResult;
-    resumeProfile = resumeResult;
-
-    // Step 3: Calculate match
-    setTaskProgress(taskId, 'running', 'matching');
-    const matchResult = await calculateMatch(jdProfile, resumeProfile);
-
-    // Step 4: Generate diagnosis
-    setTaskProgress(taskId, 'running', 'diagnosis');
-    const diagnosis = await generateDiagnosis(jdProfile, resumeProfile, matchResult);
-
-    // Step 5: Optimize resume
-    setTaskProgress(taskId, 'running', 'optimization');
-    const optimizedResume = await optimizeResume(
-      params.resume_text,
-      jdProfile,
-      resumeProfile,
-      matchResult,
-      diagnosis,
-      (params.rewrite_mode as RewriteMode) || 'standard'
-    );
-
-    // Step 6: Generate interview questions
-    setTaskProgress(taskId, 'running', 'interview_questions');
-    const interviewQuestions = await generateInterviewQuestions(
-      jdProfile,
-      resumeProfile,
-      matchResult,
-      params.question_count || 8
-    );
-
-    // Save result
-    const resultId = `result_${uuidv4().replace(/-/g, '').substring(0, 12)}`;
     await insertResult({
       id: resultId,
       task_id: taskId,
@@ -86,47 +68,11 @@ async function runAnalysis(
       optimized_resume: JSON.stringify(optimizedResume),
       interview_questions: JSON.stringify(interviewQuestions),
     });
-
-    const result: AnalysisResult = {
-      jd_profile: jdProfile,
-      resume_profile: resumeProfile,
-      match_result: matchResult,
-      diagnosis,
-      optimized_resume: optimizedResume,
-      interview_questions: interviewQuestions,
-    };
-
-    await updateTaskStatus(taskId, 'completed', 'done');
-    setTaskState(taskId, {
-      status: 'completed',
-      progress_step: 'done',
-      result,
-      result_id: resultId,
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    await updateTaskStatus(taskId, 'failed', 'failed', errorMessage);
-    setTaskState(taskId, {
-      status: 'failed',
-      progress_step: 'failed',
-      error: errorMessage,
-    });
+  } catch (e) {
+    console.warn('Failed to save result to DB (non-fatal):', e);
   }
-}
 
-function setTaskProgress(taskId: string, status: TaskStatus, step: ProgressStep): void {
-  const existing = taskStates.get(taskId);
-  taskStates.set(taskId, { ...existing, status, progress_step: step } as any);
-}
-
-function setTaskState(taskId: string, state: {
-  status: TaskStatus;
-  progress_step: ProgressStep;
-  error?: string;
-  result?: AnalysisResult;
-  result_id?: string;
-}): void {
-  taskStates.set(taskId, state);
+  return { result, resultId };
 }
 
 export async function createAnalysisTask(params: {
@@ -135,39 +81,24 @@ export async function createAnalysisTask(params: {
   rewrite_mode?: RewriteMode;
   question_count?: number;
   client_session_id?: string;
-}): Promise<string> {
+}): Promise<{ taskId: string; result: AnalysisResult; resultId: string }> {
   const taskId = `task_${uuidv4().replace(/-/g, '').substring(0, 12)}`;
 
-  await insertTask({
-    id: taskId,
-    client_session_id: params.client_session_id,
-    jd_text: params.jd_text,
-    resume_text: params.resume_text,
-    rewrite_mode: params.rewrite_mode || 'standard',
-    question_count: params.question_count || 8,
-  });
-
-  taskStates.set(taskId, {
-    status: 'pending',
-    progress_step: 'jd_parsing',
-  });
-
-  // Run analysis asynchronously (don't await)
-  runAnalysis(taskId, {
-    jd_text: params.jd_text,
-    resume_text: params.resume_text,
-    rewrite_mode: params.rewrite_mode,
-    question_count: params.question_count,
-  }).catch((err) => {
-    console.error(`Task ${taskId} failed:`, err);
-    taskStates.set(taskId, {
-      status: 'failed',
-      progress_step: 'failed',
-      error: err instanceof Error ? err.message : String(err),
+  try {
+    await insertTask({
+      id: taskId,
+      client_session_id: params.client_session_id,
+      jd_text: params.jd_text,
+      resume_text: params.resume_text,
+      rewrite_mode: params.rewrite_mode || 'standard',
+      question_count: params.question_count || 8,
     });
-  });
+  } catch (e) {
+    console.warn('Failed to save task to DB (non-fatal):', e);
+  }
 
-  return taskId;
+  const { result, resultId } = await runAnalysis(taskId, params);
+  return { taskId, result, resultId };
 }
 
 export async function getTaskStatus(taskId: string): Promise<{
@@ -177,58 +108,42 @@ export async function getTaskStatus(taskId: string): Promise<{
   result?: AnalysisResult;
   result_id?: string;
 }> {
-  // Return from in-memory state first (fast path)
-  const state = taskStates.get(taskId);
-  if (state) {
-    return {
-      status: state.status,
-      progress_step: state.progress_step,
-      error: state.error,
-      result: state.result,
-      result_id: state.result_id,
-    };
+  const task = await getTask(taskId);
+  if (!task) {
+    return { status: 'pending', progress_step: 'jd_parsing', error: 'task not found' };
   }
 
-  // Fallback: check DB (await the result properly)
-  const task = await getTask(taskId);
-  if (task) {
-    const s: {
-      status: TaskStatus;
-      progress_step?: ProgressStep;
-      error?: string;
-      result?: AnalysisResult;
-      result_id?: string;
-    } = {
-      status: task.status as TaskStatus,
-      progress_step: task.progress_step as ProgressStep,
-      error: task.error_message || undefined,
-    };
+  const s: {
+    status: TaskStatus;
+    progress_step?: ProgressStep;
+    error?: string;
+    result?: AnalysisResult;
+    result_id?: string;
+  } = {
+    status: task.status as TaskStatus,
+    progress_step: task.progress_step as ProgressStep,
+    error: task.error_message || undefined,
+  };
 
-    // If completed, also restore full result from DB
-    if (task.status === 'completed') {
-      const dbResult = await getResultByTaskId(taskId);
-      if (dbResult) {
-        s.result_id = dbResult.id;
-        try {
-          s.result = {
-            jd_profile: JSON.parse(dbResult.jd_profile || '{}'),
-            resume_profile: JSON.parse(dbResult.resume_profile || '{}'),
-            match_result: JSON.parse(dbResult.match_result || '{}'),
-            diagnosis: JSON.parse(dbResult.diagnosis || '{}'),
-            optimized_resume: JSON.parse(dbResult.optimized_resume || '{}'),
-            interview_questions: JSON.parse(dbResult.interview_questions || '{}'),
-          };
-        } catch {
-          // JSON parse failed — result data is corrupted
-          s.status = 'failed';
-          s.error = '结果数据损坏';
-        }
+  if (task.status === 'completed') {
+    const dbResult = await getResultByTaskId(taskId);
+    if (dbResult) {
+      s.result_id = dbResult.id;
+      try {
+        s.result = {
+          jd_profile: JSON.parse(dbResult.jd_profile || '{}'),
+          resume_profile: JSON.parse(dbResult.resume_profile || '{}'),
+          match_result: JSON.parse(dbResult.match_result || '{}'),
+          diagnosis: JSON.parse(dbResult.diagnosis || '{}'),
+          optimized_resume: JSON.parse(dbResult.optimized_resume || '{}'),
+          interview_questions: JSON.parse(dbResult.interview_questions || '{}'),
+        };
+      } catch {
+        s.status = 'failed';
+        s.error = '结果数据损坏';
       }
     }
-
-    taskStates.set(taskId, s as any);
-    return s;
   }
 
-  return { status: 'pending', progress_step: 'jd_parsing', error: 'task not found' };
+  return s;
 }
